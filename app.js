@@ -376,6 +376,18 @@ function plannedIncomeForPeriods(periodIds = getSelectedPeriodIds()) {
   return Number(getEffectivePayProfile(defaultMovementDate()).baseSalary || 0) * Math.max(1, periodIds.length);
 }
 
+function isBaseIncome(item) {
+  if (item.direction !== "income") return false;
+  const text = normalizeText(`${item.concept || ""} ${item.notes || ""}`);
+  return ["sueldo", "salario", "nomina", "nómina", "pago quincenal", "ingreso base"].some((term) => text.includes(normalizeText(term)));
+}
+
+function extraIncome(items) {
+  return items
+    .filter((item) => item.direction === "income" && !isBaseIncome(item))
+    .reduce((sum, item) => sum + Number(item.amount), 0);
+}
+
 function totals() {
   const periodItems = periodTransactions();
   const monthItems = currentTransactions();
@@ -384,8 +396,8 @@ function totals() {
   const actualMonthIncome = monthItems.filter((t) => t.direction === "income").reduce((s, t) => s + Number(t.amount), 0);
   const plannedIncome = plannedIncomeForPeriods();
   const plannedMonthIncome = plannedIncomeForPeriods(getPeriods().map((period) => period.id));
-  const income = plannedIncome > 0 ? plannedIncome : actualIncome;
-  const monthIncome = plannedMonthIncome > 0 ? plannedMonthIncome : actualMonthIncome;
+  const income = plannedIncome > 0 ? plannedIncome + extraIncome(periodItems) : actualIncome;
+  const monthIncome = plannedMonthIncome > 0 ? plannedMonthIncome + extraIncome(monthItems) : actualMonthIncome;
   const monthExpense = monthItems.filter((t) => t.direction === "expense" && t.status !== "cancelled").reduce((s, t) => s + Number(t.amount), 0);
   const savings = monthItems.filter((t) => t.categoryId === "ahorro").reduce((s, t) => s + Number(t.amount), 0);
   return {
