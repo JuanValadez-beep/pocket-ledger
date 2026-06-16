@@ -198,6 +198,35 @@ button {
   padding: 20px 14px 118px;
 }
 
+.demo-banner {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--green) 38%, var(--line));
+  background: var(--green-2);
+}
+
+.demo-banner strong,
+.demo-banner span {
+  display: block;
+}
+
+.demo-banner span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.demo-banner .secondary-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .period-row {
   justify-content: space-between;
   gap: 10px;

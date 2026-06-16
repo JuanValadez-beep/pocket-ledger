@@ -105,6 +105,8 @@ let unlockError = "";
 let configSection = "";
 let expandedHomeLists = { fixed: false, debts: false };
 let isFirstRun = false;
+let isDemoMode = false;
+let userStateBeforeDemo = null;
 
 const $ = (selector) => document.querySelector(selector);
 const money = (value) => new Intl.NumberFormat("es-MX", { style: "currency", currency: state.settings?.currency || "MXN" }).format(value || 0);
@@ -349,6 +351,7 @@ async function loadState() {
 }
 
 async function saveState() {
+  if (isDemoMode) return;
   try {
     const db = await openDb();
     await new Promise((resolve, reject) => {
@@ -617,6 +620,7 @@ function render() {
     <main class="app-shell">
       ${renderTopbar()}
       <section class="content">
+        ${isDemoMode ? renderDemoBanner() : ""}
         ${renderHome()}
         ${renderMovements()}
         ${renderBudget()}
@@ -681,6 +685,18 @@ function renderTopbar() {
         <button class="icon-btn ${state.selected.view === "config" ? "active" : ""}" data-nav="config" aria-label="Abrir configuracion">${svgSettings()}</button>
       </div>
     </header>
+  `;
+}
+
+function renderDemoBanner() {
+  return `
+    <section class="demo-banner">
+      <div>
+        <strong>Espacio demo</strong>
+        <span>Estos cambios son temporales y no afectan tus datos.</span>
+      </div>
+      <button class="secondary-btn small-btn" id="exitDemoBtn" type="button">${svgBack()} Volver</button>
+    </section>
   `;
 }
 
@@ -815,7 +831,7 @@ function renderMovements() {
     <div class="view ${state.selected.view === "gastos" ? "active" : ""}" data-view="gastos">
       ${renderControls()}
       <section class="card">
-        <div class="card-title"><h2>Movimientos</h2><button class="secondary-btn" id="seedBtn">Datos demo</button></div>
+        <div class="card-title"><h2>Movimientos</h2></div>
         <div class="movement-list">
           ${items.map((item) => {
             const cat = categoryById(item.categoryId);
@@ -1174,7 +1190,7 @@ function renderSettings() {
           <label class="field"><span>PIN local opcional</span><input type="password" value="${state.settings.pin || ""}" id="pinInput" placeholder="4 digitos"></label>
           ${state.settings.pin ? `<button class="secondary-btn" id="lockBtn">Bloquear ahora</button>` : ""}
           <button class="danger-btn" id="clearAllBtn">Borrar todo y empezar de cero</button>
-          <button class="danger-btn" id="resetBtn">Borrar datos y volver a demo</button>
+          <button class="secondary-btn" id="demoSpaceBtn">Abrir espacio demo</button>
         </div>
       </section>
       ` : ""}
@@ -1361,6 +1377,7 @@ function bindEvents() {
     expandedHomeLists[key] = !expandedHomeLists[key];
     render();
   }));
+  $("#exitDemoBtn")?.addEventListener("click", exitDemoSpace);
   $("#themeBtn")?.addEventListener("click", async () => {
     state.settings.theme = state.settings.theme === "light" ? "dark" : "light";
     await saveAndRender();
@@ -1463,10 +1480,10 @@ function bindEvents() {
     state.settings.currency = e.target.value || "MXN";
     await saveAndRender();
   });
-  $("#resetBtn")?.addEventListener("click", async () => {
-    openConfirm("Restaurar datos demo", "Seguro que quieres borrar los datos actuales y volver a los datos demo?", () => {
-      state = structuredClone(demoState);
-    }, "Borrar y restaurar");
+  $("#demoSpaceBtn")?.addEventListener("click", async () => {
+    openConfirm("Abrir espacio demo", "Abrire un espacio temporal con datos de ejemplo. Tus datos reales no se borran ni se sobrescriben. Al cerrar la app, la demo vuelve a su estado original.", () => {
+      enterDemoSpace();
+    }, "Abrir demo");
   });
   $("#clearAllBtn")?.addEventListener("click", async () => {
     openConfirm("Borrar todo", "Esto eliminara gastos, ingresos, deudas, metas, presupuestos, pagos fijos, categorias e historial. La app quedara vacia para que la llenes con tus propios datos.", () => {
@@ -1475,10 +1492,6 @@ function bindEvents() {
       configSection = "";
       expandedHomeLists = { fixed: false, debts: false };
     }, "Borrar todo");
-  });
-  $("#seedBtn")?.addEventListener("click", async () => {
-    state = structuredClone(demoState);
-    await saveAndRender();
   });
 }
 
@@ -1535,6 +1548,25 @@ async function onEditorConfirm() {
   if (!editorState?.onConfirm) return;
   await editorState.onConfirm();
   editorState = null;
+  await saveAndRender();
+}
+
+function enterDemoSpace() {
+  if (!isDemoMode) userStateBeforeDemo = structuredClone(state);
+  isDemoMode = true;
+  configSection = "";
+  expandedHomeLists = { fixed: false, debts: false };
+  state = structuredClone(demoState);
+  state.settings.hasSeenWelcome = true;
+  state.selected.view = "home";
+}
+
+async function exitDemoSpace() {
+  if (userStateBeforeDemo) state = structuredClone(userStateBeforeDemo);
+  userStateBeforeDemo = null;
+  isDemoMode = false;
+  configSection = "";
+  expandedHomeLists = { fixed: false, debts: false };
   await saveAndRender();
 }
 
