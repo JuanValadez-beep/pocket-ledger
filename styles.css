@@ -93,6 +93,15 @@ button {
   letter-spacing: 0;
 }
 
+.form-error {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-weight: 800;
+}
+
 .topbar {
   height: 76px;
   display: flex;
@@ -169,6 +178,11 @@ button {
   place-items: center;
   background: transparent;
   color: var(--ink);
+}
+
+.icon-btn.active {
+  background: var(--green-2);
+  color: var(--green);
 }
 
 .icon {
@@ -726,6 +740,14 @@ button {
   padding: 10px 12px;
 }
 
+.field input[type="color"] {
+  padding: 5px;
+}
+
+.field-note {
+  margin: -2px 0 2px;
+}
+
 .inline-field {
   grid-template-columns: auto 1fr;
   align-items: center;
@@ -765,6 +787,17 @@ button {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 14px;
+}
+
+.modal-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.editor-modal {
+  border: 1px solid var(--line);
 }
 
 .modal-backdrop.choosing #expenseForm {

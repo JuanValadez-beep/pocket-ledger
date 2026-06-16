@@ -41,6 +41,7 @@ const demoState = {
   settings: {
     currency: "MXN",
     baseSalary: 6000,
+    effectiveFrom: "2025-01-01",
     monthlySavingsTarget: 0,
     showSavingsSummary: true,
     paymentFrequency: "biweekly",
@@ -95,6 +96,8 @@ const demoState = {
 let state = structuredClone(demoState);
 let isUnlocked = false;
 let movementDirection = "expense";
+let editorState = null;
+let unlockError = "";
 
 const $ = (selector) => document.querySelector(selector);
 const money = (value) => new Intl.NumberFormat("es-MX", { style: "currency", currency: state.settings?.currency || "MXN" }).format(value || 0);
@@ -113,13 +116,14 @@ const movementCategories = (direction) => {
   }
   return state.categories.filter((item) => item.type !== "income");
 };
-const promptBool = (message, current) => {
-  const value = prompt(message, current ? "true" : "false");
-  return value === null ? current : parseBool(value);
-};
-
 function ensureStateDefaults() {
   state.settings = { ...demoState.settings, ...(state.settings || {}) };
+  state.payProfiles = state.payProfiles?.length ? state.payProfiles : [{
+    id: "pay-default",
+    effectiveFrom: state.settings.effectiveFrom || "2025-01-01",
+    baseSalary: Number(state.settings.baseSalary || 0),
+    paymentFrequency: state.settings.paymentFrequency || "biweekly",
+  }];
   state.selected = { ...demoState.selected, ...(state.selected || {}) };
   state.categories = state.categories?.length ? state.categories : structuredClone(demoState.categories);
   for (const category of categorySeed) {
@@ -131,13 +135,52 @@ function ensureStateDefaults() {
   state.debts = state.debts || structuredClone(demoState.debts);
   state.debtPayments = state.debtPayments || structuredClone(demoState.debtPayments);
   state.transactions = state.transactions || [];
+  syncCurrentPayProfile();
   if (!getPeriods().some((period) => period.id === state.selected.period)) {
     state.selected.period = getPeriods()[0].id;
   }
 }
 
-function getPeriods() {
-  const frequency = state.settings.paymentFrequency || "biweekly";
+function selectedMonthDate(day = 1) {
+  return `${state.selected.year}-${String(Number(state.selected.month) + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function getEffectivePayProfile(dateText = defaultMovementDate()) {
+  const fallback = {
+    effectiveFrom: "1900-01-01",
+    baseSalary: Number(state.settings.baseSalary || 0),
+    paymentFrequency: state.settings.paymentFrequency || "biweekly",
+  };
+  const profiles = (state.payProfiles?.length ? state.payProfiles : [fallback])
+    .slice()
+    .sort((a, b) => String(a.effectiveFrom).localeCompare(String(b.effectiveFrom)));
+  return profiles.filter((profile) => String(profile.effectiveFrom) <= String(dateText)).at(-1) || profiles[0] || fallback;
+}
+
+function syncCurrentPayProfile() {
+  const profile = getEffectivePayProfile(defaultMovementDate());
+  state.settings.baseSalary = Number(profile.baseSalary || 0);
+  state.settings.paymentFrequency = profile.paymentFrequency || "biweekly";
+  state.settings.effectiveFrom = state.settings.effectiveFrom || selectedMonthDate();
+}
+
+function upsertPayProfile(effectiveFrom, baseSalary, paymentFrequency) {
+  const date = effectiveFrom || selectedMonthDate();
+  const existing = state.payProfiles.find((profile) => profile.effectiveFrom === date);
+  const next = {
+    id: existing?.id || `pay-${crypto.randomUUID()}`,
+    effectiveFrom: date,
+    baseSalary: Number(baseSalary || 0),
+    paymentFrequency: paymentFrequency || "biweekly",
+  };
+  if (existing) Object.assign(existing, next);
+  else state.payProfiles.push(next);
+  state.payProfiles.sort((a, b) => String(a.effectiveFrom).localeCompare(String(b.effectiveFrom)));
+  syncCurrentPayProfile();
+}
+
+function getPeriods(dateText = defaultMovementDate()) {
+  const frequency = getEffectivePayProfile(dateText).paymentFrequency || "biweekly";
   if (frequency === "weekly") {
     return [
       { id: "week1", label: "Semana 1", range: "1 - 7" },
@@ -166,6 +209,12 @@ function periodLabel(periodId = state.selected.period) {
 
 function periodNoun() {
   const frequency = state.settings.paymentFrequency || "biweekly";
+  if (frequency === "weekly") return "semana";
+  if (frequency === "monthly") return "mes";
+  return "quincena";
+}
+
+function payFrequencyLabel(frequency) {
   if (frequency === "weekly") return "semana";
   if (frequency === "monthly") return "mes";
   return "quincena";
@@ -229,7 +278,7 @@ function periodTransactions() {
 }
 
 function plannedIncomeForPeriods(periodIds = getSelectedPeriodIds()) {
-  return Number(state.settings.baseSalary || 0) * Math.max(1, periodIds.length);
+  return Number(getEffectivePayProfile(defaultMovementDate()).baseSalary || 0) * Math.max(1, periodIds.length);
 }
 
 function totals() {
@@ -238,8 +287,10 @@ function totals() {
   const actualIncome = periodItems.filter((t) => t.direction === "income").reduce((s, t) => s + Number(t.amount), 0);
   const expenses = periodItems.filter((t) => t.direction === "expense" && t.status !== "cancelled").reduce((s, t) => s + Number(t.amount), 0);
   const actualMonthIncome = monthItems.filter((t) => t.direction === "income").reduce((s, t) => s + Number(t.amount), 0);
-  const income = Math.max(actualIncome, plannedIncomeForPeriods());
-  const monthIncome = Math.max(actualMonthIncome, plannedIncomeForPeriods(getPeriods().map((period) => period.id)));
+  const plannedIncome = plannedIncomeForPeriods();
+  const plannedMonthIncome = plannedIncomeForPeriods(getPeriods().map((period) => period.id));
+  const income = plannedIncome > 0 ? plannedIncome : actualIncome;
+  const monthIncome = plannedMonthIncome > 0 ? plannedMonthIncome : actualMonthIncome;
   const monthExpense = monthItems.filter((t) => t.direction === "expense" && t.status !== "cancelled").reduce((s, t) => s + Number(t.amount), 0);
   const savings = monthItems.filter((t) => t.categoryId === "ahorro").reduce((s, t) => s + Number(t.amount), 0);
   return {
@@ -277,6 +328,49 @@ function daysUntil(dateText) {
   const today = new Date();
   const target = new Date(`${dateText}T12:00:00`);
   return Math.ceil((target - today) / 86400000);
+}
+
+function selectedPeriodBounds(periodId = state.selected.period) {
+  const year = Number(state.selected.year);
+  const month = Number(state.selected.month);
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  const ranges = {
+    first: [1, 15],
+    second: [16, lastDay],
+    week1: [1, 7],
+    week2: [8, 14],
+    week3: [15, 21],
+    week4: [22, lastDay],
+    month: [1, lastDay],
+  };
+  const [start, end] = ranges[periodId] || ranges[state.selected.period] || [1, lastDay];
+  return {
+    start: new Date(year, month, start, 12),
+    end: new Date(year, month, Math.min(end, lastDay), 12),
+    startDay: start,
+    endDay: Math.min(end, lastDay),
+  };
+}
+
+function daysLeftInSelectedPeriod() {
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  const { start, end } = selectedPeriodBounds();
+  if (today < start) return Math.max(0, Math.ceil((end - start) / 86400000) + 1);
+  if (today > end) return 0;
+  return Math.max(0, Math.ceil((end - today) / 86400000));
+}
+
+function dueText(dateText) {
+  const diff = daysUntil(dateText);
+  if (diff < 0) return `Vencido hace ${Math.abs(diff)} dia${Math.abs(diff) === 1 ? "" : "s"}`;
+  if (diff === 0) return "Vence hoy";
+  return `En ${diff} dia${diff === 1 ? "" : "s"}`;
+}
+
+function fixedDueDate(fx) {
+  const day = Math.min(Number(fx.day || 1), new Date(Number(state.selected.year), Number(state.selected.month) + 1, 0).getDate());
+  return selectedMonthDate(day);
 }
 
 function monthlyCategorySpend(categoryId) {
@@ -390,12 +484,14 @@ function render() {
         ${renderBudget()}
         ${renderSavings()}
         ${renderMore()}
+        ${renderSettings()}
       </section>
       <button class="fab" id="addExpenseBtn" aria-label="Agregar movimiento">
         <span class="fab-circle">+</span>
       </button>
       ${renderBottomNav()}
       ${renderModal()}
+      ${renderEditorModal()}
     </main>
   `;
   bindEvents();
@@ -408,6 +504,7 @@ function renderLock() {
         <div class="brand-mark">P</div>
         <h1>Pocket Ledger</h1>
         <p class="subtle">Tus datos estan protegidos con PIN local.</p>
+        ${unlockError ? `<p class="form-error">${unlockError}</p>` : ""}
         <form class="form-grid" id="unlockForm">
           <label class="field"><span>PIN</span><input name="pin" type="password" inputmode="numeric" autocomplete="current-password" autofocus></label>
           <button class="primary-btn">Entrar</button>
@@ -422,9 +519,11 @@ function bindLockEvents() {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget));
     if (String(data.pin || "") !== String(state.settings.pin || "")) {
-      alert("PIN incorrecto.");
+      unlockError = "PIN incorrecto.";
+      render();
       return;
     }
+    unlockError = "";
     isUnlocked = true;
     render();
   });
@@ -441,7 +540,7 @@ function renderTopbar() {
         <div class="offline-badge" title="Tus datos se guardan localmente">
           ${svgCloudOff()} <span>Sin conexion</span>
         </div>
-        <button class="icon-btn" id="themeBtn" aria-label="Cambiar tema">${svgSettings()}</button>
+        <button class="icon-btn ${state.selected.view === "config" ? "active" : ""}" data-nav="config" aria-label="Abrir configuracion">${svgSettings()}</button>
       </div>
     </header>
   `;
@@ -474,23 +573,16 @@ function renderHome() {
   const t = totals();
   const rows = groupedCategories();
   const health = healthState();
+  const daysLeft = daysLeftInSelectedPeriod();
   return `
     <div class="view ${state.selected.view === "home" ? "active" : ""}" data-view="home">
       ${renderControls()}
-      <section class="hero-card">
-        <div>
-          <p class="eyebrow">Disponible</p>
-          <div class="amount-main"><strong>${shortMoney(t.available)}</strong><span class="currency">${state.settings.currency}</span></div>
-          <p class="subtle">de ${money(t.income)} de tu ${periodNoun()}</p>
-        </div>
-        <div class="wallet-art"><span class="cash"></span></div>
-      </section>
       <section class="card">
-        <div class="card-title"><h2>Sobra por ${periodNoun()}</h2><button class="info-dot" data-info="balance" aria-label="Ver informacion">i</button></div>
+        <div class="card-title"><h2>Disponible por ${periodNoun()}</h2><button class="info-dot" data-info="balance" aria-label="Ver informacion">i</button></div>
         <div class="split">
           <div>
             <div class="metric-big green-text">${shortMoney(Math.max(t.available, 0))} <span class="currency">${state.settings.currency}</span></div>
-            <p class="subtle">17 dias restantes</p>
+            <p class="subtle">${daysLeft} dia${daysLeft === 1 ? "" : "s"} restantes</p>
           </div>
           <div>
             <div class="progress-wrap"><div class="progress"><span style="width:${t.usedPct}%"></span></div><strong>${100 - t.usedPct}%</strong></div>
@@ -535,11 +627,12 @@ function renderHome() {
         <div class="payment-list">
           ${state.fixedExpenses.filter((fx) => fx.active && !fx.paid).slice(0, 3).map((fx) => {
             const category = categoryById(fx.categoryId);
+            const due = fixedDueDate(fx);
             return `
               <div class="payment-row">
                 <span class="tile" style="background:${category.color}22;color:${category.color}">${category.icon}</span>
-                <div><strong>${fx.name}</strong><br><span class="subtle">${fx.day} ${months[state.selected.month].slice(0, 3)} ${state.selected.year}</span></div>
-                <div><strong>${money(fx.amount)}</strong><br><span class="danger">En ${Math.max(1, fx.day + 1)} dias</span></div>
+                <div><strong>${fx.name}</strong><br><span class="subtle">${due}</span></div>
+                <div><strong>${money(fx.amount)}</strong><br><span class="${daysUntil(due) <= 3 ? "danger" : "subtle"}">${dueText(due)}</span></div>
               </div>
             `;
           }).join("")}
@@ -775,16 +868,25 @@ function renderMore() {
           ${ant.top.map(([name, amount]) => `<div class="category-row"><span class="dot" style="background:#a5acb6">H</span><span>${name}</span><strong>${money(amount)}</strong><span class="subtle"></span></div>`).join("") || `<p class="empty">Sin gasto hormiga detectado.</p>`}
         </div>
       </section>
+    </div>
+  `;
+}
+
+function renderSettings() {
+  return `
+    <div class="view ${state.selected.view === "config" ? "active" : ""}" data-view="config">
       <section class="card">
-        <h2 class="section-title">Configuracion</h2>
+        <div class="card-title"><h2>Configuracion</h2><button class="secondary-btn small-btn" id="themeBtn">${state.settings.theme === "dark" ? "Modo claro" : "Modo oscuro"}</button></div>
         <div class="form-grid">
           <label class="field"><span>Moneda</span><input value="${state.settings.currency}" id="currencyInput"></label>
+          <label class="field"><span>Aplicar sueldo desde</span><input type="date" value="${state.settings.effectiveFrom || selectedMonthDate()}" id="effectiveFromInput"></label>
           <label class="field"><span>Frecuencia de pago</span><select id="paymentFrequencyInput">
             <option value="biweekly" ${state.settings.paymentFrequency === "biweekly" ? "selected" : ""}>Quincenal</option>
             <option value="weekly" ${state.settings.paymentFrequency === "weekly" ? "selected" : ""}>Semanal</option>
             <option value="monthly" ${state.settings.paymentFrequency === "monthly" ? "selected" : ""}>Mensual</option>
           </select></label>
-          <label class="field"><span>Ingreso base por periodo</span><input type="number" value="${state.settings.baseSalary}" id="salaryInput"></label>
+          <label class="field"><span>Ingreso base por periodo</span><input type="number" min="0" step="0.01" value="${state.settings.baseSalary}" id="salaryInput"></label>
+          <p class="subtle field-note">El sueldo y la frecuencia se guardan como perfil historico desde la fecha indicada. Los meses anteriores conservan el perfil que les correspondia.</p>
           <label class="field"><span>Alerta amarilla desde % usado</span><input type="number" min="1" max="100" value="${state.settings.warningLimit}" id="warningLimitInput"></label>
           <label class="field"><span>Alerta roja desde % usado</span><input type="number" min="1" max="200" value="${state.settings.dangerLimit}" id="dangerLimitInput"></label>
           <label class="field"><span>PIN local opcional</span><input type="password" value="${state.settings.pin || ""}" id="pinInput" placeholder="4 digitos"></label>
@@ -794,9 +896,25 @@ function renderMore() {
         </div>
       </section>
       <section class="card">
+        <h2 class="section-title">Historial de sueldo</h2>
+        <div class="admin-list">
+          ${state.payProfiles.map((profile) => `
+            <div class="admin-row">
+              <span class="tile">$</span>
+              <div><strong>${money(profile.baseSalary)} por ${payFrequencyLabel(profile.paymentFrequency)}</strong><br><span class="subtle">Desde ${profile.effectiveFrom}</span></div>
+              <div class="row-actions">
+                <button class="secondary-btn small-btn" data-edit-pay-profile="${profile.id}">Editar</button>
+                <button class="danger-btn small-btn" data-delete-pay-profile="${profile.id}">Eliminar</button>
+              </div>
+            </div>
+          `).join("") || `<p class="empty">Sin perfiles de sueldo.</p>`}
+        </div>
+      </section>
+      <section class="card">
         <div class="card-title"><h2>Categorias</h2><button class="info-dot" data-info="categories" aria-label="Ver informacion">i</button></div>
         <form class="form-grid compact-form" id="categoryForm">
           <label class="field"><span>Nombre</span><input name="name" required placeholder="Comida"></label>
+          <label class="field"><span>Tipo</span><select name="type"><option value="expense">Gasto</option><option value="income">Ingreso</option><option value="saving">Ahorro</option><option value="debt">Deuda</option></select></label>
           <label class="field"><span>Color</span><input name="color" type="color" value="#218bd6"></label>
           <label class="field"><span>Inicial</span><input name="icon" maxlength="2" placeholder="C"></label>
           <button class="secondary-btn">Agregar categoria</button>
@@ -805,7 +923,7 @@ function renderMore() {
           ${state.categories.map((category) => `
             <div class="admin-row">
               <span class="dot" style="background:${category.color}">${category.icon}</span>
-              <div><strong>${category.name}</strong><br><span class="subtle">${category.type || "expense"}</span></div>
+              <div><strong>${category.name}</strong><br><span class="subtle">${category.type || "expense"} · ${category.active === false ? "inactiva" : "activa"}</span></div>
               <div class="row-actions">
                 <button class="secondary-btn small-btn" data-edit-category="${category.id}">Editar</button>
                 <button class="danger-btn small-btn" data-delete-category="${category.id}">Eliminar</button>
@@ -818,9 +936,10 @@ function renderMore() {
         <div class="card-title"><h2>Pagos fijos</h2><button class="info-dot" data-info="fixed" aria-label="Ver informacion">i</button></div>
         <form class="form-grid compact-form" id="fixedForm">
           <label class="field"><span>Nombre</span><input name="name" required placeholder="Internet"></label>
-          <label class="field"><span>Monto</span><input name="amount" required type="number" min="1" step="0.01" placeholder="450"></label>
+          <label class="field"><span>Monto</span><input name="amount" required type="number" min="0" step="0.01" placeholder="450"></label>
           <label class="field"><span>Dia de pago</span><input name="day" required type="number" min="1" max="31" placeholder="3"></label>
           <label class="field"><span>Categoria</span><select name="categoryId">${movementCategories("expense").map((c) => `<option value="${c.id}">${c.name}</option>`).join("")}</select></label>
+          <label class="field"><span>Frecuencia</span><select name="frequency"><option value="monthly">Mensual</option><option value="biweekly">Quincenal</option><option value="weekly">Semanal</option></select></label>
           <button class="secondary-btn">Agregar pago fijo</button>
         </form>
         <div class="admin-list">
@@ -829,7 +948,7 @@ function renderMore() {
             return `
               <div class="admin-row">
                 <span class="tile" style="background:${category.color}22;color:${category.color}">${category.icon}</span>
-                <div><strong>${fx.name}</strong><br><span class="subtle">Dia ${fx.day} · ${money(fx.amount)}</span></div>
+                <div><strong>${fx.name}</strong><br><span class="subtle">Dia ${fx.day} · ${money(fx.amount)} · ${fx.active === false ? "inactivo" : "activo"}</span></div>
                 <div class="row-actions">
                   <button class="secondary-btn small-btn" data-toggle-fixed="${fx.id}">${fx.paid ? "Pendiente" : "Pagado"}</button>
                   <button class="secondary-btn small-btn" data-edit-fixed="${fx.id}">Editar</button>
@@ -890,6 +1009,77 @@ function renderModal() {
   `;
 }
 
+function renderEditorModal() {
+  if (!editorState) return "";
+  if (editorState.type === "confirm") {
+    return `
+      <div class="modal-backdrop open editor-backdrop" id="editorBackdrop">
+        <section class="modal editor-modal" role="dialog" aria-modal="true">
+          <div class="modal-header">
+            <h2>${editorState.title}</h2>
+            <button class="icon-btn" id="editorCancel" aria-label="Cerrar">x</button>
+          </div>
+          <p class="subtle">${editorState.message}</p>
+          <div class="modal-actions">
+            <button class="secondary-btn" id="editorDismiss" type="button">Cancelar</button>
+            <button class="danger-btn" id="editorConfirm" type="button">${editorState.confirmLabel || "Confirmar"}</button>
+          </div>
+        </section>
+      </div>
+    `;
+  }
+  if (editorState.type === "notice") {
+    return `
+      <div class="modal-backdrop open editor-backdrop" id="editorBackdrop">
+        <section class="modal editor-modal" role="dialog" aria-modal="true">
+          <div class="modal-header">
+            <h2>${editorState.title}</h2>
+            <button class="icon-btn" id="editorCancel" aria-label="Cerrar">x</button>
+          </div>
+          <p class="subtle">${editorState.message}</p>
+          <div class="modal-actions">
+            <button class="primary-btn" id="editorDismiss" type="button">Entendido</button>
+          </div>
+        </section>
+      </div>
+    `;
+  }
+  return `
+    <div class="modal-backdrop open editor-backdrop" id="editorBackdrop">
+      <section class="modal editor-modal" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h2>${editorState.title}</h2>
+          <button class="icon-btn" id="editorCancel" aria-label="Cerrar">x</button>
+        </div>
+        <form class="form-grid" id="editorForm">
+          ${editorState.fields.map(renderEditorField).join("")}
+          <div class="modal-actions">
+            <button class="secondary-btn" id="editorDismiss" type="button">Cancelar</button>
+            <button class="primary-btn">${editorState.submitLabel || "Guardar"}</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function renderEditorField(field) {
+  if (field.type === "textarea") {
+    return `<label class="field"><span>${field.label}</span><textarea name="${field.name}" rows="${field.rows || 3}" ${field.required ? "required" : ""}>${field.value || ""}</textarea></label>`;
+  }
+  if (field.type === "select") {
+    return `<label class="field"><span>${field.label}</span><select name="${field.name}" ${field.required ? "required" : ""}>${field.options.map((option) => {
+      const value = Array.isArray(option) ? option[0] : option.value;
+      const label = Array.isArray(option) ? option[1] : option.label;
+      return `<option value="${value}" ${String(value) === String(field.value) ? "selected" : ""}>${label}</option>`;
+    }).join("")}</select></label>`;
+  }
+  if (field.type === "checkbox") {
+    return `<label class="field inline-field"><input type="checkbox" name="${field.name}" ${field.value ? "checked" : ""}><span>${field.label}</span></label>`;
+  }
+  return `<label class="field"><span>${field.label}</span><input name="${field.name}" type="${field.type || "text"}" value="${field.value ?? ""}" ${field.min !== undefined ? `min="${field.min}"` : ""} ${field.max !== undefined ? `max="${field.max}"` : ""} ${field.step !== undefined ? `step="${field.step}"` : ""} ${field.required ? "required" : ""}></label>`;
+}
+
 function bindEvents() {
   document.querySelectorAll("[data-calendar-control='month']").forEach((select) => {
     select.addEventListener("change", (e) => updateSelected("month", Number(e.target.value)));
@@ -917,6 +1107,13 @@ function bindEvents() {
   $("#debtForm")?.addEventListener("submit", onDebtSubmit);
   $("#canBuyForm")?.addEventListener("submit", onCanBuySubmit);
   $("#simulatorForm")?.addEventListener("submit", onSimulatorSubmit);
+  $("#editorBackdrop")?.addEventListener("click", (e) => {
+    if (e.target.id === "editorBackdrop") closeEditor();
+  });
+  $("#editorCancel")?.addEventListener("click", closeEditor);
+  $("#editorDismiss")?.addEventListener("click", closeEditor);
+  $("#editorForm")?.addEventListener("submit", onEditorSubmit);
+  $("#editorConfirm")?.addEventListener("click", onEditorConfirm);
   $("#exportExcel")?.addEventListener("click", exportExcel);
   $("#importExcel")?.addEventListener("change", importExcel);
   $("#printReport")?.addEventListener("click", () => window.print());
@@ -936,13 +1133,19 @@ function bindEvents() {
   document.querySelectorAll("[data-pay-debt]").forEach((btn) => btn.addEventListener("click", () => payDebt(btn.dataset.payDebt)));
   document.querySelectorAll("[data-edit-debt]").forEach((btn) => btn.addEventListener("click", () => editDebt(btn.dataset.editDebt)));
   document.querySelectorAll("[data-delete-debt]").forEach((btn) => btn.addEventListener("click", () => deleteDebt(btn.dataset.deleteDebt)));
+  document.querySelectorAll("[data-edit-pay-profile]").forEach((btn) => btn.addEventListener("click", () => editPayProfile(btn.dataset.editPayProfile)));
+  document.querySelectorAll("[data-delete-pay-profile]").forEach((btn) => btn.addEventListener("click", () => deletePayProfile(btn.dataset.deletePayProfile)));
+  $("#effectiveFromInput")?.addEventListener("change", async (e) => {
+    state.settings.effectiveFrom = e.target.value || selectedMonthDate();
+    await saveAndRender();
+  });
   $("#salaryInput")?.addEventListener("change", async (e) => {
-    state.settings.baseSalary = Number(e.target.value || 0);
+    upsertPayProfile($("#effectiveFromInput")?.value || selectedMonthDate(), Number(e.target.value || 0), $("#paymentFrequencyInput")?.value || state.settings.paymentFrequency);
     await saveAndRender();
   });
   $("#paymentFrequencyInput")?.addEventListener("change", async (e) => {
-    state.settings.paymentFrequency = e.target.value;
-    state.selected.period = getPeriods()[0].id;
+    upsertPayProfile($("#effectiveFromInput")?.value || selectedMonthDate(), Number($("#salaryInput")?.value || 0), e.target.value);
+    if (!getPeriods().some((period) => period.id === state.selected.period)) state.selected.period = getPeriods()[0].id;
     await saveAndRender();
   });
   $("#warningLimitInput")?.addEventListener("change", async (e) => {
@@ -969,9 +1172,9 @@ function bindEvents() {
   });
   $("#editMonthlySavings")?.addEventListener("click", editMonthlySavings);
   $("#hideMonthlySavings")?.addEventListener("click", async () => {
-    if (!confirm("Quitar el bloque de ahorro mensual? Lo puedes volver a mostrar desde Configuracion.")) return;
-    state.settings.showSavingsSummary = false;
-    await saveAndRender();
+    openConfirm("Ocultar ahorro mensual", "Quitar el bloque de ahorro mensual? Lo puedes volver a mostrar desde Configuracion.", () => {
+      state.settings.showSavingsSummary = false;
+    });
   });
   $("#lockBtn")?.addEventListener("click", async () => {
     state.settings.appLocked = true;
@@ -983,10 +1186,9 @@ function bindEvents() {
     await saveAndRender();
   });
   $("#resetBtn")?.addEventListener("click", async () => {
-    if (confirm("Seguro que quieres borrar los datos actuales y volver a los datos demo?")) {
+    openConfirm("Restaurar datos demo", "Seguro que quieres borrar los datos actuales y volver a los datos demo?", () => {
       state = structuredClone(demoState);
-      await saveAndRender();
-    }
+    }, "Borrar y restaurar");
   });
   $("#seedBtn")?.addEventListener("click", async () => {
     state = structuredClone(demoState);
@@ -994,8 +1196,55 @@ function bindEvents() {
   });
 }
 
+function openEditor(title, fields, onSave, submitLabel = "Guardar") {
+  editorState = { type: "form", title, fields, onSave, submitLabel };
+  render();
+}
+
+function openConfirm(title, message, onConfirm, confirmLabel = "Confirmar") {
+  editorState = { type: "confirm", title, message, onConfirm, confirmLabel };
+  render();
+}
+
+function openNotice(title, message) {
+  editorState = { type: "notice", title, message };
+  render();
+}
+
+function closeEditor() {
+  editorState = null;
+  render();
+}
+
+async function onEditorSubmit(event) {
+  event.preventDefault();
+  if (!editorState?.onSave) return;
+  const form = event.currentTarget;
+  const data = Object.fromEntries(new FormData(form));
+  for (const field of editorState.fields || []) {
+    if (field.type === "checkbox") data[field.name] = Boolean(form.elements[field.name]?.checked);
+  }
+  await editorState.onSave(data);
+  editorState = null;
+  await saveAndRender();
+}
+
+async function onEditorConfirm() {
+  if (!editorState?.onConfirm) return;
+  await editorState.onConfirm();
+  editorState = null;
+  await saveAndRender();
+}
+
 async function updateSelected(key, value) {
   state.selected[key] = value;
+  if (key === "month" || key === "year") {
+    state.settings.effectiveFrom = selectedMonthDate();
+    syncCurrentPayProfile();
+  }
+  if (!getPeriods().some((period) => period.id === state.selected.period)) {
+    state.selected.period = getPeriods()[0].id;
+  }
   await saveAndRender();
 }
 
@@ -1035,7 +1284,7 @@ async function onCategorySubmit(event) {
     name,
     color: data.color || "#218bd6",
     icon: String(data.icon || name[0] || "C").slice(0, 2).toUpperCase(),
-    type: "expense",
+    type: data.type || "expense",
     active: true,
   });
   await saveAndRender();
@@ -1044,49 +1293,64 @@ async function onCategorySubmit(event) {
 async function editCategory(id) {
   const category = categoryById(id);
   if (!category) return;
-  const name = prompt("Nombre de categoria", category.name);
-  if (!name) return;
-  category.name = name.trim();
-  category.type = prompt("Tipo: income, expense, saving o debt", category.type || "expense") || category.type || "expense";
-  category.color = (prompt("Color HEX", category.color) || category.color).trim();
-  category.icon = (prompt("Inicial o icono corto", category.icon) || category.icon).slice(0, 2).toUpperCase();
-  category.active = promptBool("Activa? true/false", category.active ?? true);
-  await saveAndRender();
+  openEditor("Editar categoria", [
+    { name: "name", label: "Nombre", value: category.name, required: true },
+    { name: "type", label: "Tipo", type: "select", value: category.type || "expense", options: [["expense", "Gasto"], ["income", "Ingreso"], ["saving", "Ahorro"], ["debt", "Deuda"]] },
+    { name: "color", label: "Color", type: "color", value: category.color || "#218bd6" },
+    { name: "icon", label: "Inicial o icono corto", value: category.icon || "" },
+    { name: "active", label: "Categoria activa", type: "checkbox", value: category.active !== false },
+  ], (data) => {
+    category.name = String(data.name || category.name).trim();
+    category.type = data.type || "expense";
+    category.color = String(data.color || category.color).trim();
+    category.icon = String(data.icon || category.name[0] || "C").slice(0, 2).toUpperCase();
+    category.active = Boolean(data.active);
+  });
 }
 
 async function deleteCategory(id) {
   if (state.transactions.some((item) => item.categoryId === id) || state.fixedExpenses.some((item) => item.categoryId === id)) {
-    alert("No se puede eliminar porque ya tiene movimientos o pagos fijos. Puedes editarla en su lugar.");
+    openNotice("Categoria en uso", "No se puede eliminar porque ya tiene movimientos o pagos fijos. Puedes editarla o desactivarla.");
     return;
   }
-  if (!confirm("Eliminar esta categoria?")) return;
-  state.categories = state.categories.filter((item) => item.id !== id);
-  await saveAndRender();
+  openConfirm("Eliminar categoria", "Eliminar esta categoria?", () => {
+    state.categories = state.categories.filter((item) => item.id !== id);
+  }, "Eliminar");
 }
 
 async function editTransaction(id) {
   const item = state.transactions.find((transaction) => transaction.id === id);
   if (!item) return;
-  const concept = prompt("Concepto", item.concept);
-  if (!concept) return;
-  item.concept = concept.trim();
-  item.amount = Math.max(0, Number(prompt("Monto", item.amount) || item.amount));
-  item.direction = prompt("Tipo: income o expense", item.direction) || item.direction;
-  item.categoryId = prompt(`Categoria ID (${state.categories.map((category) => category.id).join(", ")})`, item.categoryId) || item.categoryId;
-  item.date = (prompt("Fecha YYYY-MM-DD", item.date) || item.date).trim();
-  item.period = prompt(`Periodo (${getPeriods().map((period) => period.id).join(", ")})`, item.period) || item.period;
-  item.status = prompt("Estado: paid, pending o cancelled", item.status || "paid") || item.status || "paid";
-  item.type = prompt("Tipo interno: income, fixed, variable, saving, debt, extra", item.type || item.direction) || item.type || item.direction;
-  item.paymentMethod = prompt("Metodo de pago", item.paymentMethod || "debito") || item.paymentMethod || "debito";
-  item.notes = prompt("Notas", item.notes || "") || "";
-  item.updatedAt = new Date().toISOString();
-  await saveAndRender();
+  openEditor("Editar movimiento", [
+    { name: "concept", label: "Concepto", value: item.concept, required: true },
+    { name: "amount", label: "Monto", type: "number", min: 0, step: "0.01", value: item.amount, required: true },
+    { name: "direction", label: "Tipo", type: "select", value: item.direction, options: [["income", "Ingreso"], ["expense", "Gasto"]] },
+    { name: "categoryId", label: "Categoria", type: "select", value: item.categoryId, options: state.categories.map((category) => [category.id, category.name]) },
+    { name: "date", label: "Fecha", type: "date", value: item.date || defaultMovementDate() },
+    { name: "period", label: "Periodo", type: "select", value: item.period || state.selected.period, options: getPeriods(item.date || defaultMovementDate()).map((period) => [period.id, period.label]) },
+    { name: "status", label: "Estado", type: "select", value: item.status || "paid", options: [["paid", "Pagado"], ["pending", "Pendiente"], ["cancelled", "Cancelado"]] },
+    { name: "type", label: "Clase", type: "select", value: item.type || item.direction, options: [["income", "Ingreso"], ["fixed", "Fijo"], ["variable", "Variable"], ["saving", "Ahorro"], ["debt", "Deuda"], ["extra", "Extra"], ["emergency", "Emergencia"]] },
+    { name: "paymentMethod", label: "Metodo de pago", type: "select", value: item.paymentMethod || "debito", options: [["efectivo", "Efectivo"], ["debito", "Tarjeta debito"], ["credito", "Tarjeta credito"], ["transferencia", "Transferencia"], ["otro", "Otro"]] },
+    { name: "notes", label: "Notas", type: "textarea", value: item.notes || "" },
+  ], (data) => {
+    item.concept = String(data.concept || item.concept).trim();
+    item.amount = Math.max(0, Number(data.amount || 0));
+    item.direction = data.direction || item.direction;
+    item.categoryId = data.categoryId || item.categoryId;
+    item.date = data.date || item.date;
+    item.period = data.period || item.period;
+    item.status = data.status || "paid";
+    item.type = data.type || item.direction;
+    item.paymentMethod = data.paymentMethod || "debito";
+    item.notes = data.notes || "";
+    item.updatedAt = new Date().toISOString();
+  });
 }
 
 async function deleteTransaction(id) {
-  if (!confirm("Eliminar este movimiento?")) return;
-  state.transactions = state.transactions.filter((item) => item.id !== id);
-  await saveAndRender();
+  openConfirm("Eliminar movimiento", "Eliminar este movimiento?", () => {
+    state.transactions = state.transactions.filter((item) => item.id !== id);
+  }, "Eliminar");
 }
 
 async function onFixedSubmit(event) {
@@ -1098,6 +1362,7 @@ async function onFixedSubmit(event) {
     amount: Number(data.amount || 0),
     day: Number(data.day || 1),
     categoryId: data.categoryId,
+    frequency: data.frequency || "monthly",
     active: true,
     paid: false,
   });
@@ -1114,23 +1379,31 @@ async function toggleFixed(id) {
 async function editFixed(id) {
   const item = state.fixedExpenses.find((fixed) => fixed.id === id);
   if (!item) return;
-  const name = prompt("Nombre del pago fijo", item.name);
-  if (!name) return;
-  item.name = name.trim();
-  item.amount = Number(prompt("Monto", item.amount) || item.amount);
-  item.day = Math.max(1, Math.min(31, Number(prompt("Dia de pago", item.day) || item.day)));
-  item.categoryId = prompt(`Categoria ID (${movementCategories("expense").map((category) => category.id).join(", ")})`, item.categoryId) || item.categoryId;
-  item.active = promptBool("Activo? true/false", item.active ?? true);
-  item.paid = promptBool("Pagado este periodo? true/false", item.paid ?? false);
-  item.frequency = prompt("Frecuencia", item.frequency || "monthly") || item.frequency || "monthly";
-  item.notes = prompt("Notas", item.notes || "") || "";
-  await saveAndRender();
+  openEditor("Editar pago fijo", [
+    { name: "name", label: "Nombre", value: item.name, required: true },
+    { name: "amount", label: "Monto", type: "number", min: 0, step: "0.01", value: item.amount, required: true },
+    { name: "day", label: "Dia de pago", type: "number", min: 1, max: 31, value: item.day || 1, required: true },
+    { name: "categoryId", label: "Categoria", type: "select", value: item.categoryId, options: movementCategories("expense").map((category) => [category.id, category.name]) },
+    { name: "frequency", label: "Frecuencia", type: "select", value: item.frequency || "monthly", options: [["monthly", "Mensual"], ["biweekly", "Quincenal"], ["weekly", "Semanal"]] },
+    { name: "active", label: "Pago activo", type: "checkbox", value: item.active !== false },
+    { name: "paid", label: "Pagado en el periodo", type: "checkbox", value: item.paid === true },
+    { name: "notes", label: "Notas", type: "textarea", value: item.notes || "" },
+  ], (data) => {
+    item.name = String(data.name || item.name).trim();
+    item.amount = Number(data.amount || 0);
+    item.day = Math.max(1, Math.min(31, Number(data.day || 1)));
+    item.categoryId = data.categoryId || item.categoryId;
+    item.frequency = data.frequency || "monthly";
+    item.active = Boolean(data.active);
+    item.paid = Boolean(data.paid);
+    item.notes = data.notes || "";
+  });
 }
 
 async function deleteFixed(id) {
-  if (!confirm("Eliminar este pago fijo?")) return;
-  state.fixedExpenses = state.fixedExpenses.filter((item) => item.id !== id);
-  await saveAndRender();
+  openConfirm("Eliminar pago fijo", "Eliminar este pago fijo?", () => {
+    state.fixedExpenses = state.fixedExpenses.filter((item) => item.id !== id);
+  }, "Eliminar");
 }
 
 async function onBudgetSubmit(event) {
@@ -1148,36 +1421,46 @@ async function onBudgetSubmit(event) {
 async function editBudget(id) {
   const existing = state.budgets.find((budget) => budget.id === id);
   const fromCategory = existing || { id: `budget-${crypto.randomUUID()}`, year: state.selected.year, month: state.selected.month, categoryId: id, amount: 0 };
-  const categoryId = prompt(`Categoria ID (${movementCategories("expense").map((category) => category.id).join(", ")})`, fromCategory.categoryId);
-  if (!categoryId) return;
-  fromCategory.categoryId = categoryId;
-  fromCategory.amount = Number(prompt("Limite mensual", fromCategory.amount || 0) || 0);
-  fromCategory.year = Number(prompt("Anio", fromCategory.year || state.selected.year) || state.selected.year);
-  fromCategory.month = Number(prompt("Mes 0-11", fromCategory.month ?? state.selected.month) ?? state.selected.month);
-  if (!existing) state.budgets.push(fromCategory);
-  await saveAndRender();
+  openEditor("Editar limite", [
+    { name: "categoryId", label: "Categoria", type: "select", value: fromCategory.categoryId, options: movementCategories("expense").map((category) => [category.id, category.name]) },
+    { name: "amount", label: "Limite mensual", type: "number", min: 0, step: "0.01", value: fromCategory.amount || 0 },
+    { name: "year", label: "Anio", type: "number", min: 2020, max: 2100, value: fromCategory.year || state.selected.year },
+    { name: "month", label: "Mes", type: "select", value: fromCategory.month ?? state.selected.month, options: months.map((month, index) => [index, month]) },
+  ], (data) => {
+    fromCategory.categoryId = data.categoryId;
+    fromCategory.amount = Number(data.amount || 0);
+    fromCategory.year = Number(data.year || state.selected.year);
+    fromCategory.month = Number(data.month ?? state.selected.month);
+    if (!existing) state.budgets.push(fromCategory);
+  });
 }
 
 async function deleteBudget(id) {
-  if (!confirm("Eliminar este limite de categoria?")) return;
-  state.budgets = state.budgets.filter((budget) => budget.id !== id);
-  await saveAndRender();
+  openConfirm("Eliminar limite", "Eliminar este limite de categoria?", () => {
+    state.budgets = state.budgets.filter((budget) => budget.id !== id);
+  }, "Eliminar");
 }
 
 async function editMonthlySavings() {
-  const target = Number(prompt("Meta mensual de ahorro", state.settings.monthlySavingsTarget || 0) || 0);
-  const amount = Number(prompt("Ahorro destinado este mes", totals().savings || 0) || 0);
-  state.settings.monthlySavingsTarget = Math.max(0, target);
-  const existing = currentTransactions().find((item) => item.categoryId === "ahorro" && item.type === "saving" && item.concept === "Ahorro mensual");
-  if (amount > 0 && existing) {
-    existing.amount = amount;
-    existing.date = defaultMovementDate();
-    existing.period = state.selected.period;
-    existing.updatedAt = new Date().toISOString();
-  } else if (amount > 0) {
-    state.transactions.push(tx("Ahorro mensual", amount, "expense", defaultMovementDate(), "ahorro", state.selected.period, "paid", "saving"));
-  }
-  await saveAndRender();
+  openEditor("Editar ahorro mensual", [
+    { name: "target", label: "Meta mensual de ahorro", type: "number", min: 0, step: "0.01", value: state.settings.monthlySavingsTarget || 0 },
+    { name: "amount", label: "Ahorro destinado este mes", type: "number", min: 0, step: "0.01", value: totals().savings || 0 },
+  ], (data) => {
+    const target = Math.max(0, Number(data.target || 0));
+    const amount = Math.max(0, Number(data.amount || 0));
+    state.settings.monthlySavingsTarget = target;
+    const existing = currentTransactions().find((item) => item.categoryId === "ahorro" && item.type === "saving" && item.concept === "Ahorro mensual");
+    if (amount > 0 && existing) {
+      existing.amount = amount;
+      existing.date = defaultMovementDate();
+      existing.period = state.selected.period;
+      existing.updatedAt = new Date().toISOString();
+    } else if (amount > 0) {
+      state.transactions.push(tx("Ahorro mensual", amount, "expense", defaultMovementDate(), "ahorro", state.selected.period, "paid", "saving"));
+    } else if (existing) {
+      state.transactions = state.transactions.filter((item) => item.id !== existing.id);
+    }
+  });
 }
 
 async function onGoalSubmit(event) {
@@ -1199,32 +1482,42 @@ async function onGoalSubmit(event) {
 async function addGoalContribution(id) {
   const goal = state.savingGoals.find((item) => item.id === id);
   if (!goal) return;
-  const amount = Number(prompt("Monto de aportacion", "500") || 0);
-  if (!amount) return;
-  goal.currentAmount = Number(goal.currentAmount || 0) + amount;
-  state.transactions.push(tx(`Ahorro: ${goal.name}`, amount, "expense", defaultMovementDate(), "ahorro", state.selected.period, "paid", "saving"));
-  await saveAndRender();
+  openEditor("Aportar a meta", [
+    { name: "amount", label: "Monto de aportacion", type: "number", min: 0, step: "0.01", value: 500, required: true },
+  ], (data) => {
+    const amount = Number(data.amount || 0);
+    if (!amount) return;
+    goal.currentAmount = Number(goal.currentAmount || 0) + amount;
+    state.transactions.push(tx(`Ahorro: ${goal.name}`, amount, "expense", defaultMovementDate(), "ahorro", state.selected.period, "paid", "saving"));
+  }, "Aportar");
 }
 
 async function editGoal(id) {
   const goal = state.savingGoals.find((item) => item.id === id);
   if (!goal) return;
-  const name = prompt("Nombre de la meta", goal.name);
-  if (!name) return;
-  goal.name = name.trim();
-  goal.targetAmount = Number(prompt("Monto objetivo", goal.targetAmount) || goal.targetAmount);
-  goal.currentAmount = Number(prompt("Monto actual", goal.currentAmount) || goal.currentAmount);
-  goal.targetDate = prompt("Fecha objetivo YYYY-MM-DD", goal.targetDate) || goal.targetDate;
-  goal.categoryId = prompt(`Categoria ID (${state.categories.map((category) => category.id).join(", ")})`, goal.categoryId || "ahorro") || goal.categoryId || "ahorro";
-  goal.status = prompt("Estado: active, paused o done", goal.status || "active") || goal.status || "active";
-  goal.notes = prompt("Notas", goal.notes || "") || "";
-  await saveAndRender();
+  openEditor("Editar meta", [
+    { name: "name", label: "Nombre", value: goal.name, required: true },
+    { name: "targetAmount", label: "Monto objetivo", type: "number", min: 0, step: "0.01", value: goal.targetAmount || 0 },
+    { name: "currentAmount", label: "Monto actual", type: "number", min: 0, step: "0.01", value: goal.currentAmount || 0 },
+    { name: "targetDate", label: "Fecha objetivo", type: "date", value: goal.targetDate || defaultMovementDate() },
+    { name: "categoryId", label: "Categoria", type: "select", value: goal.categoryId || "ahorro", options: state.categories.map((category) => [category.id, category.name]) },
+    { name: "status", label: "Estado", type: "select", value: goal.status || "active", options: [["active", "Activa"], ["paused", "Pausada"], ["done", "Completada"]] },
+    { name: "notes", label: "Notas", type: "textarea", value: goal.notes || "" },
+  ], (data) => {
+    goal.name = String(data.name || goal.name).trim();
+    goal.targetAmount = Number(data.targetAmount || 0);
+    goal.currentAmount = Number(data.currentAmount || 0);
+    goal.targetDate = data.targetDate || goal.targetDate;
+    goal.categoryId = data.categoryId || "ahorro";
+    goal.status = data.status || "active";
+    goal.notes = data.notes || "";
+  });
 }
 
 async function deleteGoal(id) {
-  if (!confirm("Eliminar esta meta?")) return;
-  state.savingGoals = state.savingGoals.filter((item) => item.id !== id);
-  await saveAndRender();
+  openConfirm("Eliminar meta", "Eliminar esta meta?", () => {
+    state.savingGoals = state.savingGoals.filter((item) => item.id !== id);
+  }, "Eliminar");
 }
 
 async function onDebtSubmit(event) {
@@ -1248,37 +1541,80 @@ async function onDebtSubmit(event) {
 async function payDebt(id) {
   const debt = state.debts.find((item) => item.id === id);
   if (!debt) return;
-  const amount = Number(prompt("Monto del pago", debt.minimumPayment || 500) || 0);
-  if (!amount) return;
-  state.debtPayments.push({ id: `dp-${crypto.randomUUID()}`, debtId: id, date: defaultMovementDate(), amount, notes: "" });
-  state.transactions.push(tx(`Pago deuda: ${debt.name}`, amount, "expense", defaultMovementDate(), "carro", state.selected.period, "paid", "debt"));
-  debt.paidAmount = Number(debt.paidAmount || 0) + amount;
-  if (debtBalance(debt).pending <= 0) debt.status = "paid";
-  await saveAndRender();
+  openEditor("Registrar pago", [
+    { name: "amount", label: "Monto del pago", type: "number", min: 0, step: "0.01", value: debt.minimumPayment || 500, required: true },
+    { name: "date", label: "Fecha", type: "date", value: defaultMovementDate() },
+    { name: "notes", label: "Notas", type: "textarea", value: "" },
+  ], (data) => {
+    const amount = Number(data.amount || 0);
+    if (!amount) return;
+    state.debtPayments.push({ id: `dp-${crypto.randomUUID()}`, debtId: id, date: data.date || defaultMovementDate(), amount, notes: data.notes || "" });
+    state.transactions.push(tx(`Pago deuda: ${debt.name}`, amount, "expense", data.date || defaultMovementDate(), "carro", state.selected.period, "paid", "debt"));
+    debt.paidAmount = Number(debt.paidAmount || 0) + amount;
+    if (debtBalance(debt).pending <= 0) debt.status = "paid";
+  }, "Registrar pago");
 }
 
 async function editDebt(id) {
   const debt = state.debts.find((item) => item.id === id);
   if (!debt) return;
-  const name = prompt("Nombre de deuda", debt.name);
-  if (!name) return;
-  debt.name = name.trim();
-  debt.totalAmount = Number(prompt("Monto total", debt.totalAmount) || debt.totalAmount);
-  debt.paidAmount = Number(prompt("Monto pagado", debt.paidAmount || 0) || debt.paidAmount || 0);
-  debt.startDate = prompt("Fecha inicio YYYY-MM-DD", debt.startDate || defaultMovementDate()) || debt.startDate || defaultMovementDate();
-  debt.minimumPayment = Number(prompt("Pago minimo", debt.minimumPayment) || debt.minimumPayment);
-  debt.dueDate = prompt("Fecha limite YYYY-MM-DD", debt.dueDate) || debt.dueDate;
-  debt.frequency = prompt("Frecuencia", debt.frequency || "monthly") || debt.frequency || "monthly";
-  debt.status = prompt("Estado: active, paused o paid", debt.status || "active") || debt.status || "active";
-  debt.notes = prompt("Notas", debt.notes || "") || "";
-  await saveAndRender();
+  openEditor("Editar deuda", [
+    { name: "name", label: "Nombre", value: debt.name, required: true },
+    { name: "totalAmount", label: "Monto total", type: "number", min: 0, step: "0.01", value: debt.totalAmount || 0 },
+    { name: "paidAmount", label: "Monto pagado", type: "number", min: 0, step: "0.01", value: debt.paidAmount || 0 },
+    { name: "startDate", label: "Fecha inicio", type: "date", value: debt.startDate || defaultMovementDate() },
+    { name: "dueDate", label: "Fecha limite", type: "date", value: debt.dueDate || "" },
+    { name: "minimumPayment", label: "Pago minimo", type: "number", min: 0, step: "0.01", value: debt.minimumPayment || 0 },
+    { name: "frequency", label: "Frecuencia", type: "select", value: debt.frequency || "monthly", options: [["weekly", "Semanal"], ["biweekly", "Quincenal"], ["monthly", "Mensual"], ["single", "Unico"]] },
+    { name: "status", label: "Estado", type: "select", value: debt.status || "active", options: [["active", "Activa"], ["paused", "Pausada"], ["paid", "Liquidada"]] },
+    { name: "notes", label: "Notas", type: "textarea", value: debt.notes || "" },
+  ], (data) => {
+    debt.name = String(data.name || debt.name).trim();
+    debt.totalAmount = Number(data.totalAmount || 0);
+    debt.paidAmount = Number(data.paidAmount || 0);
+    debt.startDate = data.startDate || debt.startDate || defaultMovementDate();
+    debt.dueDate = data.dueDate || "";
+    debt.minimumPayment = Number(data.minimumPayment || 0);
+    debt.frequency = data.frequency || "monthly";
+    debt.status = data.status || "active";
+    debt.notes = data.notes || "";
+  });
 }
 
 async function deleteDebt(id) {
-  if (!confirm("Eliminar esta deuda y sus pagos?")) return;
-  state.debts = state.debts.filter((item) => item.id !== id);
-  state.debtPayments = state.debtPayments.filter((item) => item.debtId !== id);
-  await saveAndRender();
+  openConfirm("Eliminar deuda", "Eliminar esta deuda y sus pagos?", () => {
+    state.debts = state.debts.filter((item) => item.id !== id);
+    state.debtPayments = state.debtPayments.filter((item) => item.debtId !== id);
+  }, "Eliminar");
+}
+
+async function editPayProfile(id) {
+  const profile = state.payProfiles.find((item) => item.id === id);
+  if (!profile) return;
+  openEditor("Editar sueldo historico", [
+    { name: "effectiveFrom", label: "Aplica desde", type: "date", value: profile.effectiveFrom || selectedMonthDate(), required: true },
+    { name: "baseSalary", label: "Ingreso por periodo", type: "number", min: 0, step: "0.01", value: profile.baseSalary || 0 },
+    { name: "paymentFrequency", label: "Periodo de pago", type: "select", value: profile.paymentFrequency || "biweekly", options: [["biweekly", "Quincenal"], ["weekly", "Semanal"], ["monthly", "Mensual"]] },
+  ], (data) => {
+    profile.effectiveFrom = data.effectiveFrom || profile.effectiveFrom || selectedMonthDate();
+    profile.baseSalary = Number(data.baseSalary || 0);
+    profile.paymentFrequency = data.paymentFrequency || "biweekly";
+    state.payProfiles.sort((a, b) => String(a.effectiveFrom).localeCompare(String(b.effectiveFrom)));
+    syncCurrentPayProfile();
+    if (!getPeriods().some((period) => period.id === state.selected.period)) state.selected.period = getPeriods()[0].id;
+  });
+}
+
+async function deletePayProfile(id) {
+  if (state.payProfiles.length <= 1) {
+    openNotice("Perfil requerido", "Necesitas al menos un perfil de sueldo para calcular tus periodos.");
+    return;
+  }
+  openConfirm("Eliminar sueldo historico", "Eliminar este perfil de sueldo? Los periodos que dependan de el usaran el perfil anterior disponible.", () => {
+    state.payProfiles = state.payProfiles.filter((item) => item.id !== id);
+    syncCurrentPayProfile();
+    if (!getPeriods().some((period) => period.id === state.selected.period)) state.selected.period = getPeriods()[0].id;
+  }, "Eliminar");
 }
 
 function onCanBuySubmit(event) {
@@ -1318,7 +1654,7 @@ function showInfo(kind) {
     tools: "Las herramientas simulan escenarios sin cambiar datos reales y evalúan si una compra afecta tu disponible.",
     ant: `Gasto hormiga = gastos menores o iguales a ${money(state.settings.antExpenseLimit)} en el mes seleccionado.`,
   };
-  alert(messages[kind] || "Informacion no disponible.");
+  openNotice("Informacion", messages[kind] || "Informacion no disponible.");
 }
 
 async function saveAndRender() {
@@ -1381,6 +1717,10 @@ function exportExcel() {
       ["id", "debtId", "date", "amount", "notes"],
       ...state.debtPayments.map((p) => [p.id, p.debtId, p.date, p.amount, p.notes]),
     ],
+    SueldoHistorico: [
+      ["id", "effectiveFrom", "baseSalary", "paymentFrequency"],
+      ...state.payProfiles.map((p) => [p.id, p.effectiveFrom, p.baseSalary, p.paymentFrequency]),
+    ],
     Config: [
       ["key", "value"],
       ...Object.entries(state.settings).map(([key, value]) => [key, value]),
@@ -1404,11 +1744,10 @@ async function importExcel(event) {
     if (!sheets.Movimientos && sheets.GASTOS) {
       const imported = importLegacyGastosSheet(sheets.GASTOS);
       if (!imported.length) throw new Error("Sin movimientos");
-      if (!confirm(`Detecte ${imported.length} movimientos de tu Excel anterior. Quieres agregarlos a Pocket Ledger?`)) return;
-      state.transactions.push(...imported);
-      ensureStateDefaults();
-      await saveAndRender();
-      alert(`Importe ${imported.length} movimientos desde GASTOS.xlsx.`);
+      openConfirm("Importar Excel anterior", `Detecte ${imported.length} movimientos de tu Excel anterior. Quieres agregarlos a Pocket Ledger?`, () => {
+        state.transactions.push(...imported);
+        ensureStateDefaults();
+      }, "Importar");
       return;
     }
     if (!sheets.Movimientos && !sheets.Categorias) throw new Error("Formato no reconocido");
@@ -1419,12 +1758,13 @@ async function importExcel(event) {
     state.savingGoals = rowsToObjects(sheets.Metas || []).map((row) => ({ ...row, targetAmount: Number(row.targetAmount || 0), currentAmount: Number(row.currentAmount || 0) }));
     state.debts = rowsToObjects(sheets.Deudas || []).map((row) => ({ ...row, totalAmount: Number(row.totalAmount || 0), paidAmount: Number(row.paidAmount || 0), minimumPayment: Number(row.minimumPayment || 0) }));
     state.debtPayments = rowsToObjects(sheets.PagosDeuda || []).map((row) => ({ ...row, amount: Number(row.amount || 0) }));
+    state.payProfiles = rowsToObjects(sheets.SueldoHistorico || []).map((row) => ({ ...row, baseSalary: Number(row.baseSalary || 0) }));
     const config = rowsToObjects(sheets.Config || []);
     for (const item of config) state.settings[item.key] = normalizeConfigValue(item.key, item.value);
     ensureStateDefaults();
     await saveAndRender();
   } catch {
-    alert("No pude importar ese Excel. Usa un respaldo exportado desde Pocket Ledger o tu archivo GASTOS.xlsx.");
+    openNotice("Excel no importado", "No pude importar ese Excel. Usa un respaldo exportado desde Pocket Ledger o tu archivo GASTOS.xlsx.");
   }
 }
 
@@ -1766,6 +2106,11 @@ async function init() {
   await loadState();
   ensureStateDefaults();
   render();
+  setInterval(() => {
+    const activeTag = document.activeElement?.tagName;
+    const isEditing = ["INPUT", "SELECT", "TEXTAREA"].includes(activeTag);
+    if (!document.hidden && !isEditing && !document.querySelector(".modal-backdrop.open")) render();
+  }, 60000);
   setupServiceWorker();
 }
 
