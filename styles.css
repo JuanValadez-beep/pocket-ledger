@@ -870,6 +870,91 @@ button {
   border: 1px solid var(--line);
 }
 
+.welcome-modal {
+  display: grid;
+  gap: 14px;
+  text-align: center;
+}
+
+.welcome-modal h2 {
+  margin: 0;
+  font-size: 26px;
+}
+
+.welcome-art {
+  min-height: 116px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--green-2), var(--surface-2));
+  border: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: end;
+  gap: 14px;
+  padding: 20px;
+}
+
+.welcome-coin {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  justify-self: end;
+  align-self: center;
+  background: linear-gradient(145deg, #12aa86, #20c997);
+  color: #fff;
+  font-size: 38px;
+  font-weight: 900;
+  box-shadow: 0 14px 30px rgba(18, 170, 134, 0.26);
+}
+
+.welcome-bars {
+  height: 78px;
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+
+.welcome-bars span {
+  width: 20px;
+  border-radius: 8px 8px 0 0;
+  background: var(--blue);
+}
+
+.welcome-bars span:nth-child(1) {
+  height: 32px;
+  background: var(--orange);
+}
+
+.welcome-bars span:nth-child(2) {
+  height: 54px;
+  background: var(--green);
+}
+
+.welcome-bars span:nth-child(3) {
+  height: 76px;
+  background: var(--violet);
+}
+
+.welcome-copy,
+.welcome-quote {
+  margin: 0;
+}
+
+.welcome-copy {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.welcome-quote {
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  font-weight: 900;
+  color: var(--green);
+}
+
 .modal-backdrop.choosing #expenseForm {
   display: none;
 }

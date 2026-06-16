@@ -52,6 +52,7 @@ const demoState = {
     appLocked: false,
     theme: "light",
     uiScale: 100,
+    hasSeenWelcome: false,
     lastBackupAt: null,
   },
   selected: {
@@ -103,6 +104,7 @@ let editorState = null;
 let unlockError = "";
 let configSection = "";
 let expandedHomeLists = { fixed: false, debts: false };
+let isFirstRun = false;
 
 const $ = (selector) => document.querySelector(selector);
 const money = (value) => new Intl.NumberFormat("es-MX", { style: "currency", currency: state.settings?.currency || "MXN" }).format(value || 0);
@@ -114,7 +116,8 @@ const byMonth = (item) => {
   const date = new Date(`${item.date}T12:00:00`);
   return date.getFullYear() === Number(state.selected.year) && date.getMonth() === Number(state.selected.month);
 };
-const categoryById = (id) => state.categories.find((item) => item.id === id) || state.categories.at(-1);
+const fallbackCategory = { id: "sin-categoria", name: "Sin categoria", color: "#a5acb6", icon: "?", type: "expense", active: true };
+const categoryById = (id) => state.categories.find((item) => item.id === id) || state.categories.at(-1) || fallbackCategory;
 const movementCategories = (direction) => {
   if (direction === "income") {
     return state.categories.filter((item) => item.type === "income" || item.id === "otros");
@@ -130,9 +133,12 @@ function ensureStateDefaults() {
     paymentFrequency: state.settings.paymentFrequency || "biweekly",
   }];
   state.selected = { ...demoState.selected, ...(state.selected || {}) };
-  state.categories = state.categories?.length ? state.categories : structuredClone(demoState.categories);
-  for (const category of categorySeed) {
-    if (!state.categories.some((item) => item.id === category.id)) state.categories.unshift(structuredClone(category));
+  const hadCategories = Array.isArray(state.categories);
+  state.categories = hadCategories ? state.categories : structuredClone(demoState.categories);
+  if (!hadCategories) {
+    for (const category of categorySeed) {
+      if (!state.categories.some((item) => item.id === category.id)) state.categories.unshift(structuredClone(category));
+    }
   }
   state.fixedExpenses = state.fixedExpenses || [];
   state.fixedPayments = state.fixedPayments || [];
@@ -150,6 +156,46 @@ function ensureStateDefaults() {
   if (!getPeriods().some((period) => period.id === state.selected.period)) {
     state.selected.period = getPeriods()[0].id;
   }
+}
+
+function blankState() {
+  const today = new Date();
+  const selected = {
+    month: today.getMonth(),
+    year: today.getFullYear(),
+    period: "first",
+    view: "home",
+  };
+  return {
+    settings: {
+      ...demoState.settings,
+      currency: state.settings.currency || "MXN",
+      theme: state.settings.theme || "light",
+      uiScale: state.settings.uiScale || 100,
+      baseSalary: 0,
+      effectiveFrom: isoDateFromParts(today.getFullYear(), today.getMonth(), 1),
+      monthlySavingsTarget: 0,
+      lastBackupAt: null,
+      pin: "",
+      appLocked: false,
+      hasSeenWelcome: false,
+    },
+    selected,
+    categories: [],
+    fixedExpenses: [],
+    fixedPayments: [],
+    budgets: [],
+    savingGoals: [],
+    debts: [],
+    debtPayments: [],
+    transactions: [],
+    payProfiles: [{
+      id: `pay-${crypto.randomUUID()}`,
+      effectiveFrom: isoDateFromParts(today.getFullYear(), today.getMonth(), 1),
+      baseSalary: 0,
+      paymentFrequency: "biweekly",
+    }],
+  };
 }
 
 function selectedMonthDate(day = 1) {
@@ -276,6 +322,7 @@ function openDb() {
 }
 
 async function loadState() {
+  let loaded = false;
   try {
     const db = await openDb();
     const saved = await new Promise((resolve, reject) => {
@@ -283,10 +330,21 @@ async function loadState() {
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
-    if (saved) state = saved;
+    if (saved) {
+      state = saved;
+      loaded = true;
+    }
   } catch {
     const fallback = localStorage.getItem("pocket-ledger-state");
-    if (fallback) state = JSON.parse(fallback);
+    if (fallback) {
+      state = JSON.parse(fallback);
+      loaded = true;
+    }
+  }
+  if (!loaded) {
+    state = blankState();
+    state.settings.hasSeenWelcome = false;
+    isFirstRun = true;
   }
 }
 
@@ -1115,6 +1173,7 @@ function renderSettings() {
         <div class="form-grid">
           <label class="field"><span>PIN local opcional</span><input type="password" value="${state.settings.pin || ""}" id="pinInput" placeholder="4 digitos"></label>
           ${state.settings.pin ? `<button class="secondary-btn" id="lockBtn">Bloquear ahora</button>` : ""}
+          <button class="danger-btn" id="clearAllBtn">Borrar todo y empezar de cero</button>
           <button class="danger-btn" id="resetBtn">Borrar datos y volver a demo</button>
         </div>
       </section>
@@ -1177,6 +1236,22 @@ function renderModal() {
 
 function renderEditorModal() {
   if (!editorState) return "";
+  if (editorState.type === "welcome") {
+    return `
+      <div class="modal-backdrop open editor-backdrop" id="editorBackdrop">
+        <section class="modal editor-modal welcome-modal" role="dialog" aria-modal="true">
+          <div class="welcome-art" aria-hidden="true">
+            <div class="welcome-coin">$</div>
+            <div class="welcome-bars"><span></span><span></span><span></span></div>
+          </div>
+          <h2>${editorState.title}</h2>
+          <p class="welcome-copy">${editorState.message}</p>
+          <p class="welcome-quote">Nadie te dijo que organizarte tambien podia hacer que tu dinero rindiera mas.</p>
+          <button class="primary-btn" id="welcomeAccept" type="button">Aceptar</button>
+        </section>
+      </div>
+    `;
+  }
   if (editorState.type === "confirm") {
     return `
       <div class="modal-backdrop open editor-backdrop" id="editorBackdrop">
@@ -1248,7 +1323,7 @@ function renderEditorField(field) {
 
 function movementTargetOptions(kind = movementKind) {
   if (kind === "income") {
-    return movementCategories("income").map((category) => `<option value="cat:${category.id}">${category.name}</option>`).join("");
+    return movementCategories("income").map((category) => `<option value="cat:${category.id}">${category.name}</option>`).join("") || `<option value="cat:sin-categoria">Sin categoria</option>`;
   }
   if (kind === "saving") {
     const goals = state.savingGoals.filter((goal) => goal.status !== "done").map((goal) => `<option value="goal:${goal.id}">Meta: ${goal.name}</option>`).join("");
@@ -1257,7 +1332,7 @@ function movementTargetOptions(kind = movementKind) {
   }
   const categories = movementCategories("expense").filter((category) => category.type !== "debt").map((category) => `<option value="cat:${category.id}">${category.name}</option>`).join("");
   const debts = state.debts.filter((debt) => debt.status !== "paid").map((debt) => `<option value="debt:${debt.id}">Deuda: ${debt.name}</option>`).join("");
-  return `${categories}${debts}`;
+  return `${categories}${debts}` || `<option value="cat:sin-categoria">Sin categoria</option>`;
 }
 
 function bindEvents() {
@@ -1311,6 +1386,7 @@ function bindEvents() {
   $("#editorDismiss")?.addEventListener("click", closeEditor);
   $("#editorForm")?.addEventListener("submit", onEditorSubmit);
   $("#editorConfirm")?.addEventListener("click", onEditorConfirm);
+  $("#welcomeAccept")?.addEventListener("click", acceptWelcome);
   $("#exportExcel")?.addEventListener("click", exportExcel);
   $("#importExcel")?.addEventListener("change", importExcel);
   $("#printReport")?.addEventListener("click", () => window.print());
@@ -1392,6 +1468,14 @@ function bindEvents() {
       state = structuredClone(demoState);
     }, "Borrar y restaurar");
   });
+  $("#clearAllBtn")?.addEventListener("click", async () => {
+    openConfirm("Borrar todo", "Esto eliminara gastos, ingresos, deudas, metas, presupuestos, pagos fijos, categorias e historial. La app quedara vacia para que la llenes con tus propios datos.", () => {
+      state = blankState();
+      isUnlocked = true;
+      configSection = "";
+      expandedHomeLists = { fixed: false, debts: false };
+    }, "Borrar todo");
+  });
   $("#seedBtn")?.addEventListener("click", async () => {
     state = structuredClone(demoState);
     await saveAndRender();
@@ -1411,6 +1495,22 @@ function openConfirm(title, message, onConfirm, confirmLabel = "Confirmar") {
 function openNotice(title, message) {
   editorState = { type: "notice", title, message };
   render();
+}
+
+function openWelcome() {
+  editorState = {
+    type: "welcome",
+    title: "Bienvenido a Pocket Ledger",
+    message: "Gracias por usar la app. Empieza en limpio, crea tus categorias y registra tus ingresos, gastos, deudas y metas a tu ritmo.",
+  };
+  render();
+}
+
+async function acceptWelcome() {
+  state.settings.hasSeenWelcome = true;
+  isFirstRun = false;
+  editorState = null;
+  await saveAndRender();
 }
 
 function closeEditor() {
@@ -2416,6 +2516,7 @@ async function init() {
   await loadState();
   ensureStateDefaults();
   render();
+  if (isFirstRun && !state.settings.hasSeenWelcome) openWelcome();
   setInterval(() => {
     const activeTag = document.activeElement?.tagName;
     const isEditing = ["INPUT", "SELECT", "TEXTAREA"].includes(activeTag);
