@@ -113,7 +113,6 @@ const money = (value) => new Intl.NumberFormat("es-MX", { style: "currency", cur
 const shortMoney = (value) => money(value).replace(state.settings?.currency || "MXN", "").trim();
 const textDecoder = new TextDecoder();
 const decodeText = (data) => data ? textDecoder.decode(data) : "";
-const byPeriod = (item) => getSelectedPeriodIds().includes(item.period);
 const byMonth = (item) => {
   const date = new Date(`${item.date}T12:00:00`);
   return date.getFullYear() === Number(state.selected.year) && date.getMonth() === Number(state.selected.month);
@@ -155,9 +154,7 @@ function ensureStateDefaults() {
   state.debtPayments = state.debtPayments || structuredClone(demoState.debtPayments);
   state.transactions = state.transactions || [];
   syncCurrentPayProfile();
-  if (!getPeriods().some((period) => period.id === state.selected.period)) {
-    state.selected.period = getPeriods()[0].id;
-  }
+  state.selected.period = "month";
 }
 
 function blankState() {
@@ -251,27 +248,11 @@ function upsertPayProfile(effectiveFrom, baseSalary, paymentFrequency) {
 }
 
 function getPeriods(dateText = defaultMovementDate()) {
-  const frequency = getEffectivePayProfile(dateText).paymentFrequency || "biweekly";
-  if (frequency === "weekly") {
-    return [
-      { id: "week1", label: "Semana 1", range: "1 - 7" },
-      { id: "week2", label: "Semana 2", range: "8 - 14" },
-      { id: "week3", label: "Semana 3", range: "15 - 21" },
-      { id: "week4", label: "Semana 4", range: "22 - 31" },
-    ];
-  }
-  if (frequency === "monthly") {
-    return [{ id: "month", label: "Mes completo", range: "1 - 31" }];
-  }
-  return [
-    { id: "first", label: "1a Quincena", range: "1 - 15" },
-    { id: "second", label: "2a Quincena", range: "16 - 31" },
-  ];
+  return [{ id: "month", label: "Mes completo", range: "1 - 31" }];
 }
 
 function getSelectedPeriodIds() {
-  if (state.selected.period === "month") return getPeriods().map((period) => period.id);
-  return [state.selected.period];
+  return ["month", "first", "second", "week1", "week2", "week3", "week4"];
 }
 
 function periodLabel(periodId = state.selected.period) {
@@ -279,10 +260,7 @@ function periodLabel(periodId = state.selected.period) {
 }
 
 function periodNoun() {
-  const frequency = state.settings.paymentFrequency || "biweekly";
-  if (frequency === "weekly") return "semana";
-  if (frequency === "monthly") return "mes";
-  return "quincena";
+  return "mes";
 }
 
 function payFrequencyLabel(frequency) {
@@ -297,21 +275,11 @@ function periodRange(periodId = state.selected.period) {
 }
 
 function defaultMovementDate() {
-  const period = state.selected.period;
-  const dayByPeriod = { first: 1, second: 16, week1: 1, week2: 8, week3: 15, week4: 22, month: 1 };
-  const day = String(dayByPeriod[period] || 1).padStart(2, "0");
-  return `${state.selected.year}-${String(Number(state.selected.month) + 1).padStart(2, "0")}-${day}`;
+  return selectedMonthDate(1);
 }
 
 function periodFromDate(dateText) {
-  const day = Number(String(dateText).slice(8, 10));
-  const periods = getPeriods(dateText);
-  if (periods.some((period) => period.id === "month")) return "month";
-  if (day <= 7 && periods.some((period) => period.id === "week1")) return "week1";
-  if (day <= 14 && periods.some((period) => period.id === "week2")) return "week2";
-  if (day <= 21 && periods.some((period) => period.id === "week3")) return "week3";
-  if (periods.some((period) => period.id === "week4")) return "week4";
-  return day <= 15 ? "first" : "second";
+  return "month";
 }
 
 function openDb() {
@@ -369,11 +337,13 @@ function currentTransactions() {
 }
 
 function periodTransactions() {
-  return currentTransactions().filter(byPeriod);
+  return currentTransactions();
 }
 
 function plannedIncomeForPeriods(periodIds = getSelectedPeriodIds()) {
-  return Number(getEffectivePayProfile(defaultMovementDate()).baseSalary || 0) * Math.max(1, periodIds.length);
+  const profile = getEffectivePayProfile(selectedMonthDate());
+  const multipliers = { weekly: 4, biweekly: 2, monthly: 1 };
+  return Number(profile.baseSalary || 0) * (multipliers[profile.paymentFrequency] || 2);
 }
 
 function isBaseIncome(item) {
@@ -389,13 +359,13 @@ function extraIncome(items) {
 }
 
 function totals() {
-  const periodItems = periodTransactions();
   const monthItems = currentTransactions();
-  const actualIncome = periodItems.filter((t) => t.direction === "income").reduce((s, t) => s + Number(t.amount), 0);
-  const expenses = periodItems.filter((t) => t.direction === "expense" && t.status !== "cancelled").reduce((s, t) => s + Number(t.amount), 0);
+  const periodItems = monthItems;
+  const actualIncome = monthItems.filter((t) => t.direction === "income").reduce((s, t) => s + Number(t.amount), 0);
+  const expenses = monthItems.filter((t) => t.direction === "expense" && t.status !== "cancelled").reduce((s, t) => s + Number(t.amount), 0);
   const actualMonthIncome = monthItems.filter((t) => t.direction === "income").reduce((s, t) => s + Number(t.amount), 0);
   const plannedIncome = plannedIncomeForPeriods();
-  const plannedMonthIncome = plannedIncomeForPeriods(getPeriods().map((period) => period.id));
+  const plannedMonthIncome = plannedIncome;
   const income = plannedIncome > 0 ? plannedIncome + extraIncome(periodItems) : actualIncome;
   const monthIncome = plannedMonthIncome > 0 ? plannedMonthIncome + extraIncome(monthItems) : actualMonthIncome;
   const monthExpense = monthItems.filter((t) => t.direction === "expense" && t.status !== "cancelled").reduce((s, t) => s + Number(t.amount), 0);
@@ -437,7 +407,7 @@ function daysUntil(dateText) {
   return Math.ceil((target - today) / 86400000);
 }
 
-function selectedPeriodBounds(periodId = state.selected.period) {
+function selectedPeriodBounds(periodId = "month") {
   const year = Number(state.selected.year);
   const month = Number(state.selected.month);
   const lastDay = new Date(year, month + 1, 0).getDate();
@@ -450,7 +420,7 @@ function selectedPeriodBounds(periodId = state.selected.period) {
     week4: [22, lastDay],
     month: [1, lastDay],
   };
-  const [start, end] = ranges[periodId] || ranges[state.selected.period] || [1, lastDay];
+  const [start, end] = ranges.month;
   return {
     start: new Date(year, month, start, 12),
     end: new Date(year, month, Math.min(end, lastDay), 12),
@@ -511,7 +481,7 @@ function debtPaidThisMonth(debt) {
   return state.debtPayments.some((payment) => payment.debtId === debt.id && monthKey(new Date(`${payment.date}T12:00:00`).getFullYear(), new Date(`${payment.date}T12:00:00`).getMonth()) === monthKey());
 }
 
-function upcomingDebtsForSelectedPeriod() {
+function upcomingDebtsForSelectedMonth() {
   const bounds = selectedPeriodBounds();
   return state.debts
     .filter((debt) => debt.status !== "paid")
@@ -725,13 +695,6 @@ function renderControls() {
         ${[2025, 2026, 2027].map((y) => `<option value="${y}" ${y === Number(state.selected.year) ? "selected" : ""}>${y}</option>`).join("")}
       </select>
     </div>
-    <div class="segment" role="tablist">
-      ${getPeriods().map((period) => `
-        <button data-period="${period.id}" class="${state.selected.period === period.id ? "active" : ""}">
-          ${state.selected.period === period.id ? "OK " : ""}${period.label}<br><span>${periodRange(period.id)}</span>
-        </button>
-      `).join("")}
-    </div>
   `;
 }
 
@@ -742,14 +705,14 @@ function renderHome() {
   const daysLeft = daysLeftInSelectedPeriod();
   const fixedRows = fixedPaymentsThisMonth();
   const pendingFixedRows = fixedRows.filter((fx) => !fx.paid);
-  const debtRows = upcomingDebtsForSelectedPeriod();
+  const debtRows = upcomingDebtsForSelectedMonth();
   const visibleFixedRows = expandedHomeLists.fixed ? pendingFixedRows : pendingFixedRows.slice(0, 3);
   const visibleDebtRows = expandedHomeLists.debts ? debtRows : debtRows.slice(0, 3);
   return `
     <div class="view ${state.selected.view === "home" ? "active" : ""}" data-view="home">
       ${renderControls()}
       <section class="card">
-        <div class="card-title"><h2>Disponible por ${periodNoun()}</h2><button class="info-dot" data-info="balance" aria-label="Ver informacion">i</button></div>
+        <div class="card-title"><h2>Disponible del mes</h2><button class="info-dot" data-info="balance" aria-label="Ver informacion">i</button></div>
         <div class="split">
           <div>
             <div class="metric-big green-text">${shortMoney(Math.max(t.available, 0))} <span class="currency">${state.settings.currency}</span></div>
@@ -815,7 +778,7 @@ function renderHome() {
         ${fixedRows.some((fx) => fx.paid) ? `<p class="subtle paid-note">${fixedRows.filter((fx) => fx.paid).length} pago${fixedRows.filter((fx) => fx.paid).length === 1 ? "" : "s"} fijo${fixedRows.filter((fx) => fx.paid).length === 1 ? "" : "s"} pagado${fixedRows.filter((fx) => fx.paid).length === 1 ? "" : "s"} este mes.</p>` : ""}
       </section>
       <section class="card">
-        <div class="card-title"><h2>Deudas del periodo</h2><button class="info-dot" data-info="debts" aria-label="Ver informacion">i</button></div>
+        <div class="card-title"><h2>Deudas del mes</h2><button class="info-dot" data-info="debts" aria-label="Ver informacion">i</button></div>
         <div class="payment-list">
           ${visibleDebtRows.map((debt) => {
             const category = categoryById(debtCategoryId(debt));
@@ -829,7 +792,7 @@ function renderHome() {
                 <button class="trash-btn" data-delete-debt="${debt.id}" aria-label="Eliminar deuda">${svgTrash()}</button>
               </div>
             `;
-          }).join("") || `<p class="empty">Sin deudas pendientes en este periodo.</p>`}
+          }).join("") || `<p class="empty">Sin deudas pendientes este mes.</p>`}
         </div>
         ${debtRows.length > 3 ? `<button class="expand-list-btn" data-toggle-home-list="debts" aria-label="${expandedHomeLists.debts ? "Mostrar menos deudas" : "Mostrar todas las deudas"}">${expandedHomeLists.debts ? "Mostrar menos" : `Ver ${debtRows.length - 3} mas`} ${svgChevron(expandedHomeLists.debts)}</button>` : ""}
       </section>
@@ -850,7 +813,7 @@ function renderMovements() {
             return `
               <div class="movement-row">
                 <span class="tile" style="background:${cat.color}22;color:${cat.color}">${cat.icon}</span>
-                <div><strong>${item.concept}</strong><br><span class="subtle">${item.date} · ${periodLabel(item.period)}</span></div>
+                <div><strong>${item.concept}</strong><br><span class="subtle">${item.date}</span></div>
                 <strong class="${item.direction === "income" ? "green-text" : ""}">${item.direction === "income" ? "+" : "-"}${money(item.amount)}</strong>
                 <div class="row-actions movement-actions">
                   <button class="secondary-btn small-btn" data-edit-transaction="${item.id}">Editar</button>
@@ -967,7 +930,7 @@ function renderSavings() {
           <label class="field"><span>Pagado inicial</span><input name="paidAmount" type="number" min="0" step="0.01" value="0"></label>
           <label class="field"><span>Meses</span><input name="installments" type="number" min="1" step="1" placeholder="12"></label>
           <label class="field"><span>Dia de pago</span><input name="paymentDay" type="number" min="1" max="31" value="28"></label>
-          <label class="field"><span>Pago por periodo</span><input name="minimumPayment" type="number" min="0" step="0.01"></label>
+          <label class="field"><span>Pago mensual</span><input name="minimumPayment" type="number" min="0" step="0.01"></label>
           <label class="field"><span>Categoria</span><select name="categoryId">${movementCategories("expense").filter((category) => category.type === "debt").map((category) => `<option value="${category.id}">${category.name}</option>`).join("")}</select></label>
           <label class="field"><span>Fecha limite</span><input name="dueDate" type="date"></label>
           <button class="secondary-btn">Agregar deuda</button>
@@ -1073,7 +1036,7 @@ function renderMore() {
 function renderSettings() {
   const sections = [
     ["appearance", "Apariencia y app", "Tema, escala, moneda y alertas", svgSettings()],
-    ["salary", "Sueldo y periodos", "Ingreso, frecuencia e historial", svgWallet()],
+    ["salary", "Sueldo", "Ingreso, frecuencia e historial", svgWallet()],
     ["categories", "Categorias", "Colores, tipos e iconos", svgPie()],
     ["fixed", "Pagos fijos", "Recurrentes y dias de pago", svgCalendar()],
     ["security", "Seguridad y datos", "PIN, bloqueo y datos demo", svgCloudOff()],
@@ -1114,7 +1077,7 @@ function renderSettings() {
       ` : ""}
       ${configSection === "salary" ? `
       <section class="card">
-        <h2 class="section-title">Sueldo y periodos</h2>
+        <h2 class="section-title">Sueldo</h2>
         <div class="form-grid">
           <label class="field"><span>Aplicar sueldo desde</span><input type="date" value="${state.settings.effectiveFrom || selectedMonthDate()}" id="effectiveFromInput"></label>
           <label class="field"><span>Frecuencia de pago</span><select id="paymentFrequencyInput">
@@ -1122,8 +1085,8 @@ function renderSettings() {
             <option value="weekly" ${state.settings.paymentFrequency === "weekly" ? "selected" : ""}>Semanal</option>
             <option value="monthly" ${state.settings.paymentFrequency === "monthly" ? "selected" : ""}>Mensual</option>
           </select></label>
-          <label class="field"><span>Ingreso base por periodo</span><input type="number" min="0" step="0.01" value="${state.settings.baseSalary}" id="salaryInput"></label>
-          <p class="subtle field-note">El sueldo y la frecuencia se guardan como perfil historico desde la fecha indicada. Los meses anteriores conservan el perfil que les correspondia.</p>
+          <label class="field"><span>Ingreso por pago</span><input type="number" min="0" step="0.01" value="${state.settings.baseSalary}" id="salaryInput"></label>
+          <p class="subtle field-note">La frecuencia se usa para calcular automaticamente el ingreso mensual esperado. Los meses anteriores conservan el perfil que les correspondia.</p>
         </div>
       </section>
       <section class="card">
@@ -1253,7 +1216,6 @@ function renderModal() {
           <label class="field"><span>Monto</span><input name="amount" required type="number" min="1" step="0.01" placeholder="850"></label>
           <label class="field"><span id="targetLabel">Categoria</span><select name="targetId">${movementTargetOptions(movementKind)}</select></label>
           <label class="field"><span>Fecha</span><input name="date" type="date" value="${defaultMovementDate()}"></label>
-          <label class="field"><span>Periodo</span><select name="period">${getPeriods().map((period) => `<option value="${period.id}" ${period.id === state.selected.period ? "selected" : ""}>${period.label}</option>`).join("")}</select></label>
           <label class="field"><span>Notas</span><textarea name="notes" rows="2"></textarea></label>
           <button class="primary-btn" id="movementSubmitBtn">Guardar movimiento</button>
         </form>
@@ -1370,7 +1332,6 @@ function bindEvents() {
   document.querySelectorAll("[data-calendar-control='year']").forEach((select) => {
     select.addEventListener("change", (e) => updateSelected("year", Number(e.target.value)));
   });
-  document.querySelectorAll("[data-period]").forEach((btn) => btn.addEventListener("click", () => updateSelected("period", btn.dataset.period)));
   document.querySelectorAll("[data-nav]").forEach((btn) => btn.addEventListener("click", () => {
     if (btn.dataset.nav === "config" && state.selected.view === "config") configSection = "";
     if (btn.dataset.nav !== "config") configSection = "";
@@ -1448,7 +1409,7 @@ function bindEvents() {
   });
   $("#paymentFrequencyInput")?.addEventListener("change", async (e) => {
     upsertPayProfile($("#effectiveFromInput")?.value || selectedMonthDate(), Number($("#salaryInput")?.value || 0), e.target.value);
-    if (!getPeriods().some((period) => period.id === state.selected.period)) state.selected.period = getPeriods()[0].id;
+    state.selected.period = "month";
     await saveAndRender();
   });
   $("#warningLimitInput")?.addEventListener("change", async (e) => {
@@ -1588,9 +1549,7 @@ async function updateSelected(key, value) {
     state.settings.effectiveFrom = selectedMonthDate();
     syncCurrentPayProfile();
   }
-  if (!getPeriods().some((period) => period.id === state.selected.period)) {
-    state.selected.period = getPeriods()[0].id;
-  }
+  state.selected.period = "month";
   await saveAndRender();
 }
 
@@ -1676,7 +1635,6 @@ async function editTransaction(id) {
     { name: "direction", label: "Tipo", type: "select", value: item.direction, options: [["income", "Ingreso"], ["expense", "Gasto"]] },
     { name: "categoryId", label: "Categoria", type: "select", value: item.categoryId, options: state.categories.map((category) => [category.id, category.name]) },
     { name: "date", label: "Fecha", type: "date", value: item.date || defaultMovementDate() },
-    { name: "period", label: "Periodo", type: "select", value: item.period || state.selected.period, options: getPeriods(item.date || defaultMovementDate()).map((period) => [period.id, period.label]) },
     { name: "status", label: "Estado", type: "select", value: item.status || "paid", options: [["paid", "Pagado"], ["pending", "Pendiente"], ["cancelled", "Cancelado"]] },
     { name: "type", label: "Clase", type: "select", value: item.type || item.direction, options: [["income", "Ingreso"], ["fixed", "Fijo"], ["variable", "Variable"], ["saving", "Ahorro"], ["debt", "Deuda"], ["extra", "Extra"], ["emergency", "Emergencia"]] },
     { name: "paymentMethod", label: "Metodo de pago", type: "select", value: item.paymentMethod || "debito", options: [["efectivo", "Efectivo"], ["debito", "Tarjeta debito"], ["credito", "Tarjeta credito"], ["transferencia", "Transferencia"], ["otro", "Otro"]] },
@@ -1687,7 +1645,7 @@ async function editTransaction(id) {
     item.direction = data.direction || item.direction;
     item.categoryId = data.categoryId || item.categoryId;
     item.date = data.date || item.date;
-    item.period = data.period || item.period;
+    item.period = "month";
     item.status = data.status || "paid";
     item.type = data.type || item.direction;
     item.paymentMethod = data.paymentMethod || "debito";
@@ -1830,10 +1788,10 @@ async function editMonthlySavings() {
     if (amount > 0 && existing) {
       existing.amount = amount;
       existing.date = defaultMovementDate();
-      existing.period = state.selected.period;
+      existing.period = "month";
       existing.updatedAt = new Date().toISOString();
     } else if (amount > 0) {
-      state.transactions.push(tx("Ahorro mensual", amount, "expense", defaultMovementDate(), "ahorro", state.selected.period, "paid", "saving"));
+      state.transactions.push(tx("Ahorro mensual", amount, "expense", defaultMovementDate(), "ahorro", "month", "paid", "saving"));
     } else if (existing) {
       state.transactions = state.transactions.filter((item) => item.id !== existing.id);
     }
@@ -1865,7 +1823,7 @@ async function addGoalContribution(id) {
     const amount = Number(data.amount || 0);
     if (!amount) return;
     goal.currentAmount = Number(goal.currentAmount || 0) + amount;
-    state.transactions.push(tx(`Ahorro: ${goal.name}`, amount, "expense", defaultMovementDate(), "ahorro", state.selected.period, "paid", "saving"));
+    state.transactions.push(tx(`Ahorro: ${goal.name}`, amount, "expense", defaultMovementDate(), "ahorro", "month", "paid", "saving"));
   }, "Aportar");
 }
 
@@ -1981,27 +1939,27 @@ async function editPayProfile(id) {
   if (!profile) return;
   openEditor("Editar sueldo historico", [
     { name: "effectiveFrom", label: "Aplica desde", type: "date", value: profile.effectiveFrom || selectedMonthDate(), required: true },
-    { name: "baseSalary", label: "Ingreso por periodo", type: "number", min: 0, step: "0.01", value: profile.baseSalary || 0 },
-    { name: "paymentFrequency", label: "Periodo de pago", type: "select", value: profile.paymentFrequency || "biweekly", options: [["biweekly", "Quincenal"], ["weekly", "Semanal"], ["monthly", "Mensual"]] },
+    { name: "baseSalary", label: "Ingreso por pago", type: "number", min: 0, step: "0.01", value: profile.baseSalary || 0 },
+    { name: "paymentFrequency", label: "Frecuencia de pago", type: "select", value: profile.paymentFrequency || "biweekly", options: [["biweekly", "Quincenal"], ["weekly", "Semanal"], ["monthly", "Mensual"]] },
   ], (data) => {
     profile.effectiveFrom = data.effectiveFrom || profile.effectiveFrom || selectedMonthDate();
     profile.baseSalary = Number(data.baseSalary || 0);
     profile.paymentFrequency = data.paymentFrequency || "biweekly";
     state.payProfiles.sort((a, b) => String(a.effectiveFrom).localeCompare(String(b.effectiveFrom)));
     syncCurrentPayProfile();
-    if (!getPeriods().some((period) => period.id === state.selected.period)) state.selected.period = getPeriods()[0].id;
+    state.selected.period = "month";
   });
 }
 
 async function deletePayProfile(id) {
   if (state.payProfiles.length <= 1) {
-    openNotice("Perfil requerido", "Necesitas al menos un perfil de sueldo para calcular tus periodos.");
+    openNotice("Perfil requerido", "Necesitas al menos un perfil de sueldo para calcular tu ingreso mensual esperado.");
     return;
   }
-  openConfirm("Eliminar sueldo historico", "Eliminar este perfil de sueldo? Los periodos que dependan de el usaran el perfil anterior disponible.", () => {
+  openConfirm("Eliminar sueldo historico", "Eliminar este perfil de sueldo? Los meses que dependan de el usaran el perfil anterior disponible.", () => {
     state.payProfiles = state.payProfiles.filter((item) => item.id !== id);
     syncCurrentPayProfile();
-    if (!getPeriods().some((period) => period.id === state.selected.period)) state.selected.period = getPeriods()[0].id;
+    state.selected.period = "month";
   }, "Eliminar");
 }
 
@@ -2031,7 +1989,7 @@ function onSimulatorSubmit(event) {
 function showInfo(kind) {
   const t = totals();
   const messages = {
-    balance: `Disponible = ingresos menos gastos del periodo seleccionado. Ahora usaste ${t.usedPct}% de tus ingresos de este periodo.`,
+    balance: `Disponible = ingreso mensual esperado mas ingresos extra, menos gastos del mes. Ahora usaste ${t.usedPct}% de tus ingresos del mes.`,
     health: `Semaforo configurable: verde debajo de ${state.settings.warningLimit}%, amarillo desde ${state.settings.warningLimit}% y rojo desde ${state.settings.dangerLimit}% del ingreso usado.`,
     categories: "Las categorias alimentan la grafica del dashboard. Si agregas un gasto con una categoria, la dona se recalcula automaticamente.",
     fixed: "Los pagos fijos sirven para recordar compromisos recurrentes. Puedes marcarlos como pagados, editarlos o eliminarlos.",
