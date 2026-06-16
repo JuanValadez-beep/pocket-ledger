@@ -51,6 +51,7 @@ const demoState = {
     pin: "",
     appLocked: false,
     theme: "light",
+    uiScale: 100,
     lastBackupAt: null,
   },
   selected: {
@@ -100,6 +101,8 @@ let movementDirection = "expense";
 let movementKind = "expense";
 let editorState = null;
 let unlockError = "";
+let configSection = "";
+let expandedHomeLists = { fixed: false, debts: false };
 
 const $ = (selector) => document.querySelector(selector);
 const money = (value) => new Intl.NumberFormat("es-MX", { style: "currency", currency: state.settings?.currency || "MXN" }).format(value || 0);
@@ -546,6 +549,7 @@ function donutGradient(rows) {
 
 function render() {
   document.documentElement.dataset.theme = state.settings.theme;
+  document.documentElement.style.setProperty("--ui-scale", `${Math.max(0.5, Math.min(2, Number(state.settings.uiScale || 100) / 100))}`);
   if (state.settings.pin && state.settings.appLocked && !isUnlocked) {
     $("#root").innerHTML = renderLock();
     bindLockEvents();
@@ -653,6 +657,8 @@ function renderHome() {
   const fixedRows = fixedPaymentsThisMonth();
   const pendingFixedRows = fixedRows.filter((fx) => !fx.paid);
   const debtRows = upcomingDebtsForSelectedPeriod();
+  const visibleFixedRows = expandedHomeLists.fixed ? pendingFixedRows : pendingFixedRows.slice(0, 3);
+  const visibleDebtRows = expandedHomeLists.debts ? debtRows : debtRows.slice(0, 3);
   return `
     <div class="view ${state.selected.view === "home" ? "active" : ""}" data-view="home">
       ${renderControls()}
@@ -704,34 +710,42 @@ function renderHome() {
       <section class="card">
         <div class="card-title"><h2>Pagos fijos del mes</h2><button class="info-dot" data-info="fixed" aria-label="Ver informacion">i</button></div>
         <div class="payment-list">
-          ${pendingFixedRows.map((fx) => {
+          ${visibleFixedRows.map((fx) => {
             const category = categoryById(fx.categoryId);
             const due = fx.dueDate;
             return `
-              <button class="payment-row payment-button" data-pay-fixed="${fx.id}" type="button">
-                <span class="tile" style="background:${category.color}22;color:${category.color}">${category.icon}</span>
-                <div><strong>${fx.name}</strong><br><span class="subtle">${due}</span></div>
-                <div><strong>${money(fx.amount)}</strong><br><span class="${daysUntil(due) <= 3 ? "danger" : "subtle"}">${dueText(due)}</span></div>
-              </button>
+              <div class="payment-row action-payment-row">
+                <button class="payment-main" data-pay-fixed="${fx.id}" type="button">
+                  <span class="tile" style="background:${category.color}22;color:${category.color}">${category.icon}</span>
+                  <span><strong>${fx.name}</strong><br><span class="subtle">${due}</span></span>
+                  <span class="amount-side"><strong>${money(fx.amount)}</strong><br><span class="${daysUntil(due) <= 3 ? "danger" : "subtle"}">${dueText(due)}</span></span>
+                </button>
+                <button class="trash-btn" data-delete-fixed="${fx.id}" aria-label="Eliminar pago fijo">${svgTrash()}</button>
+              </div>
             `;
           }).join("") || `<p class="empty">Sin pagos fijos pendientes este mes.</p>`}
         </div>
+        ${pendingFixedRows.length > 3 ? `<button class="expand-list-btn" data-toggle-home-list="fixed" aria-label="${expandedHomeLists.fixed ? "Mostrar menos pagos fijos" : "Mostrar todos los pagos fijos"}">${expandedHomeLists.fixed ? "Mostrar menos" : `Ver ${pendingFixedRows.length - 3} mas`} ${svgChevron(expandedHomeLists.fixed)}</button>` : ""}
         ${fixedRows.some((fx) => fx.paid) ? `<p class="subtle paid-note">${fixedRows.filter((fx) => fx.paid).length} pago${fixedRows.filter((fx) => fx.paid).length === 1 ? "" : "s"} fijo${fixedRows.filter((fx) => fx.paid).length === 1 ? "" : "s"} pagado${fixedRows.filter((fx) => fx.paid).length === 1 ? "" : "s"} este mes.</p>` : ""}
       </section>
       <section class="card">
         <div class="card-title"><h2>Deudas del periodo</h2><button class="info-dot" data-info="debts" aria-label="Ver informacion">i</button></div>
         <div class="payment-list">
-          ${debtRows.map((debt) => {
+          ${visibleDebtRows.map((debt) => {
             const category = categoryById(debtCategoryId(debt));
             return `
-              <button class="payment-row payment-button" data-pay-debt="${debt.id}" type="button">
-                <span class="tile" style="background:${category.color}22;color:${category.color}">${category.icon}</span>
-                <div><strong>${debt.name}</strong><br><span class="subtle">${debt.dueDateForMonth} · ${debt.installments ? `${debt.installments} meses` : "plan abierto"}</span></div>
-                <div><strong>${money(debt.minimumPayment)}</strong><br><span class="${daysUntil(debt.dueDateForMonth) <= 3 ? "danger" : "subtle"}">${dueText(debt.dueDateForMonth)}</span></div>
-              </button>
+              <div class="payment-row action-payment-row">
+                <button class="payment-main" data-pay-debt="${debt.id}" type="button">
+                  <span class="tile" style="background:${category.color}22;color:${category.color}">${category.icon}</span>
+                  <span><strong>${debt.name}</strong><br><span class="subtle">${debt.dueDateForMonth} · ${debt.installments ? `${debt.installments} meses` : "plan abierto"}</span></span>
+                  <span class="amount-side"><strong>${money(debt.minimumPayment)}</strong><br><span class="${daysUntil(debt.dueDateForMonth) <= 3 ? "danger" : "subtle"}">${dueText(debt.dueDateForMonth)}</span></span>
+                </button>
+                <button class="trash-btn" data-delete-debt="${debt.id}" aria-label="Eliminar deuda">${svgTrash()}</button>
+              </div>
             `;
           }).join("") || `<p class="empty">Sin deudas pendientes en este periodo.</p>`}
         </div>
+        ${debtRows.length > 3 ? `<button class="expand-list-btn" data-toggle-home-list="debts" aria-label="${expandedHomeLists.debts ? "Mostrar menos deudas" : "Mostrar todas las deudas"}">${expandedHomeLists.debts ? "Mostrar menos" : `Ver ${debtRows.length - 3} mas`} ${svgChevron(expandedHomeLists.debts)}</button>` : ""}
       </section>
     </div>
   `;
@@ -971,12 +985,51 @@ function renderMore() {
 }
 
 function renderSettings() {
+  const sections = [
+    ["appearance", "Apariencia y app", "Tema, escala, moneda y alertas", svgSettings()],
+    ["salary", "Sueldo y periodos", "Ingreso, frecuencia e historial", svgWallet()],
+    ["categories", "Categorias", "Colores, tipos e iconos", svgPie()],
+    ["fixed", "Pagos fijos", "Recurrentes y dias de pago", svgCalendar()],
+    ["security", "Seguridad y datos", "PIN, bloqueo y datos demo", svgCloudOff()],
+  ];
+  if (!configSection) {
+    return `
+      <div class="view ${state.selected.view === "config" ? "active" : ""}" data-view="config">
+        <section class="card settings-menu-card">
+          <h2 class="section-title">Configuracion</h2>
+          <div class="settings-list">
+            ${sections.map(([id, title, detail, icon]) => `
+              <button class="settings-row" data-config-section="${id}" type="button">
+                <span class="settings-icon">${icon}</span>
+                <span><strong>${title}</strong><small>${detail}</small></span>
+                <span class="settings-arrow">›</span>
+              </button>
+            `).join("")}
+          </div>
+        </section>
+      </div>
+    `;
+  }
+  const title = sections.find(([id]) => id === configSection)?.[1] || "Configuracion";
   return `
     <div class="view ${state.selected.view === "config" ? "active" : ""}" data-view="config">
+      <button class="settings-back" data-config-back type="button">${svgBack()} ${title}</button>
+      ${configSection === "appearance" ? `
       <section class="card">
-        <div class="card-title"><h2>Configuracion</h2><button class="secondary-btn small-btn" id="themeBtn">${state.settings.theme === "dark" ? "Modo claro" : "Modo oscuro"}</button></div>
+        <div class="card-title"><h2>Apariencia y app</h2><button class="secondary-btn small-btn" id="themeBtn">${state.settings.theme === "dark" ? "Modo claro" : "Modo oscuro"}</button></div>
         <div class="form-grid">
           <label class="field"><span>Moneda</span><input value="${state.settings.currency}" id="currencyInput"></label>
+          <label class="field"><span>Escala visual (${state.settings.uiScale || 100}%)</span><input type="range" min="50" max="200" step="5" value="${state.settings.uiScale || 100}" id="uiScaleInput"></label>
+          <label class="field"><span>Alerta amarilla desde % usado</span><input type="number" min="1" max="100" value="${state.settings.warningLimit}" id="warningLimitInput"></label>
+          <label class="field"><span>Alerta roja desde % usado</span><input type="number" min="1" max="200" value="${state.settings.dangerLimit}" id="dangerLimitInput"></label>
+          <label class="field inline-field"><input type="checkbox" id="showSavingsInput" ${state.settings.showSavingsSummary ? "checked" : ""}><span>Mostrar ahorro mensual</span></label>
+        </div>
+      </section>
+      ` : ""}
+      ${configSection === "salary" ? `
+      <section class="card">
+        <h2 class="section-title">Sueldo y periodos</h2>
+        <div class="form-grid">
           <label class="field"><span>Aplicar sueldo desde</span><input type="date" value="${state.settings.effectiveFrom || selectedMonthDate()}" id="effectiveFromInput"></label>
           <label class="field"><span>Frecuencia de pago</span><select id="paymentFrequencyInput">
             <option value="biweekly" ${state.settings.paymentFrequency === "biweekly" ? "selected" : ""}>Quincenal</option>
@@ -985,12 +1038,6 @@ function renderSettings() {
           </select></label>
           <label class="field"><span>Ingreso base por periodo</span><input type="number" min="0" step="0.01" value="${state.settings.baseSalary}" id="salaryInput"></label>
           <p class="subtle field-note">El sueldo y la frecuencia se guardan como perfil historico desde la fecha indicada. Los meses anteriores conservan el perfil que les correspondia.</p>
-          <label class="field"><span>Alerta amarilla desde % usado</span><input type="number" min="1" max="100" value="${state.settings.warningLimit}" id="warningLimitInput"></label>
-          <label class="field"><span>Alerta roja desde % usado</span><input type="number" min="1" max="200" value="${state.settings.dangerLimit}" id="dangerLimitInput"></label>
-          <label class="field"><span>PIN local opcional</span><input type="password" value="${state.settings.pin || ""}" id="pinInput" placeholder="4 digitos"></label>
-          <label class="field inline-field"><input type="checkbox" id="showSavingsInput" ${state.settings.showSavingsSummary ? "checked" : ""}><span>Mostrar ahorro mensual</span></label>
-          ${state.settings.pin ? `<button class="secondary-btn" id="lockBtn">Bloquear ahora</button>` : ""}
-          <button class="danger-btn" id="resetBtn">Borrar datos y volver a demo</button>
         </div>
       </section>
       <section class="card">
@@ -1008,6 +1055,8 @@ function renderSettings() {
           `).join("") || `<p class="empty">Sin perfiles de sueldo.</p>`}
         </div>
       </section>
+      ` : ""}
+      ${configSection === "categories" ? `
       <section class="card">
         <div class="card-title"><h2>Categorias</h2><button class="info-dot" data-info="categories" aria-label="Ver informacion">i</button></div>
         <form class="form-grid compact-form" id="categoryForm">
@@ -1030,6 +1079,8 @@ function renderSettings() {
           `).join("")}
         </div>
       </section>
+      ` : ""}
+      ${configSection === "fixed" ? `
       <section class="card">
         <div class="card-title"><h2>Pagos fijos</h2><button class="info-dot" data-info="fixed" aria-label="Ver informacion">i</button></div>
         <form class="form-grid compact-form" id="fixedForm">
@@ -1057,6 +1108,17 @@ function renderSettings() {
           }).join("")}
         </div>
       </section>
+      ` : ""}
+      ${configSection === "security" ? `
+      <section class="card">
+        <h2 class="section-title">Seguridad y datos</h2>
+        <div class="form-grid">
+          <label class="field"><span>PIN local opcional</span><input type="password" value="${state.settings.pin || ""}" id="pinInput" placeholder="4 digitos"></label>
+          ${state.settings.pin ? `<button class="secondary-btn" id="lockBtn">Bloquear ahora</button>` : ""}
+          <button class="danger-btn" id="resetBtn">Borrar datos y volver a demo</button>
+        </div>
+      </section>
+      ` : ""}
     </div>
   `;
 }
@@ -1206,7 +1268,24 @@ function bindEvents() {
     select.addEventListener("change", (e) => updateSelected("year", Number(e.target.value)));
   });
   document.querySelectorAll("[data-period]").forEach((btn) => btn.addEventListener("click", () => updateSelected("period", btn.dataset.period)));
-  document.querySelectorAll("[data-nav]").forEach((btn) => btn.addEventListener("click", () => updateSelected("view", btn.dataset.nav)));
+  document.querySelectorAll("[data-nav]").forEach((btn) => btn.addEventListener("click", () => {
+    if (btn.dataset.nav === "config" && state.selected.view === "config") configSection = "";
+    if (btn.dataset.nav !== "config") configSection = "";
+    updateSelected("view", btn.dataset.nav);
+  }));
+  document.querySelectorAll("[data-config-section]").forEach((btn) => btn.addEventListener("click", () => {
+    configSection = btn.dataset.configSection;
+    render();
+  }));
+  $("[data-config-back]")?.addEventListener("click", () => {
+    configSection = "";
+    render();
+  });
+  document.querySelectorAll("[data-toggle-home-list]").forEach((btn) => btn.addEventListener("click", () => {
+    const key = btn.dataset.toggleHomeList;
+    expandedHomeLists[key] = !expandedHomeLists[key];
+    render();
+  }));
   $("#themeBtn")?.addEventListener("click", async () => {
     state.settings.theme = state.settings.theme === "light" ? "dark" : "light";
     await saveAndRender();
@@ -1273,6 +1352,10 @@ function bindEvents() {
   });
   $("#dangerLimitInput")?.addEventListener("change", async (e) => {
     state.settings.dangerLimit = Number(e.target.value || 100);
+    await saveAndRender();
+  });
+  $("#uiScaleInput")?.addEventListener("change", async (e) => {
+    state.settings.uiScale = Math.max(50, Math.min(200, Number(e.target.value || 100)));
     await saveAndRender();
   });
   $("#antLimitInput")?.addEventListener("change", async (e) => {
@@ -2015,6 +2098,18 @@ function svgCalendar() {
   return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4M16 2v4M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/></svg>`;
 }
 
+function svgTrash() {
+  return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 15h10l1-15"/><path d="M10 11v6M14 11v6"/></svg>`;
+}
+
+function svgChevron(up = false) {
+  return `<svg class="icon chevron-icon ${up ? "up" : ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`;
+}
+
+function svgBack() {
+  return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>`;
+}
+
 function buildXlsxWorkbook(sheets) {
   const sheetNames = Object.keys(sheets);
   const contentTypes = sheetNames.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("");
@@ -2218,7 +2313,7 @@ function parseBool(value) {
 }
 
 function normalizeConfigValue(key, value) {
-  if (["baseSalary", "warningLimit", "dangerLimit", "antExpenseLimit", "monthlySavingsTarget"].includes(key)) return Number(value || 0);
+  if (["baseSalary", "warningLimit", "dangerLimit", "antExpenseLimit", "monthlySavingsTarget", "uiScale"].includes(key)) return Number(value || 0);
   if (["appLocked", "showSavingsSummary"].includes(key)) return parseBool(value);
   return value;
 }

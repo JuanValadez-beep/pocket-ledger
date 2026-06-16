@@ -1,5 +1,6 @@
 :root {
   color-scheme: light;
+  --ui-scale: 1;
   --bg: #fbfcfd;
   --surface: #ffffff;
   --surface-2: #f6faf9;
@@ -63,6 +64,7 @@ button {
   background: var(--bg);
   position: relative;
   box-shadow: 0 0 0 1px rgba(17, 24, 39, 0.04);
+  zoom: var(--ui-scale);
 }
 
 .lock-shell {
@@ -516,6 +518,7 @@ button {
   border-bottom: 1px solid var(--line);
 }
 
+.payment-main,
 .payment-button {
   width: 100%;
   text-align: left;
@@ -523,8 +526,64 @@ button {
   color: inherit;
 }
 
+.payment-main {
+  display: grid;
+  grid-template-columns: 48px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.action-payment-row {
+  grid-template-columns: 1fr 38px;
+}
+
+.amount-side {
+  text-align: right;
+}
+
+.payment-main:hover,
 .payment-button:hover {
   background: color-mix(in srgb, var(--green-2) 52%, transparent);
+}
+
+.trash-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  align-self: center;
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.trash-btn .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.expand-list-btn,
+.settings-back {
+  width: 100%;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--green);
+  font-weight: 900;
+  margin-top: 8px;
+}
+
+.chevron-icon {
+  transition: transform 160ms ease;
+}
+
+.chevron-icon.up {
+  transform: rotate(180deg);
 }
 
 .payment-row:last-child,
@@ -976,6 +1035,68 @@ button {
   border-radius: 8px;
   background: var(--surface-2);
   border: 1px solid var(--line);
+}
+
+.settings-menu-card {
+  padding-bottom: 8px;
+}
+
+.settings-list {
+  display: grid;
+  margin-top: 12px;
+}
+
+.settings-row {
+  min-height: 68px;
+  display: grid;
+  grid-template-columns: 44px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-row strong {
+  display: block;
+  font-size: 16px;
+}
+
+.settings-row small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.settings-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: var(--green-2);
+  color: var(--green);
+}
+
+.settings-arrow {
+  color: var(--muted);
+  font-size: 28px;
+  line-height: 1;
+}
+
+.settings-back {
+  justify-content: flex-start;
+  margin: 0 0 12px;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--ink);
 }
 
 @media print {
