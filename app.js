@@ -275,7 +275,8 @@ function periodRange(periodId = state.selected.period) {
 }
 
 function defaultMovementDate() {
-  return selectedMonthDate(1);
+  const today = new Date();
+  return isoDateFromParts(today.getFullYear(), today.getMonth(), today.getDate());
 }
 
 function periodFromDate(dateText) {
@@ -388,11 +389,23 @@ function totals() {
 function groupedCategories() {
   const rows = [];
   const total = totals().monthExpense;
-  for (const category of state.categories) {
-    const amount = currentTransactions()
-      .filter((t) => t.direction === "expense" && t.categoryId === category.id && t.status !== "cancelled")
-      .reduce((sum, t) => sum + Number(t.amount), 0);
-    if (amount > 0) rows.push({ ...category, amount, pct: total ? Math.round((amount / total) * 100) : 0 });
+  const map = new Map();
+  for (const item of currentTransactions().filter((t) => t.direction === "expense" && t.status !== "cancelled")) {
+    const baseCategory = categoryById(item.categoryId);
+    const goal = item.goalId ? state.savingGoals.find((entry) => entry.id === item.goalId) : null;
+    const key = item.type === "saving" ? `saving:${goal?.id || "general"}` : `cat:${baseCategory.id}`;
+    const existing = map.get(key) || {
+      id: key,
+      name: item.type === "saving" ? (goal?.name || "Ahorro general") : baseCategory.name,
+      color: item.type === "saving" ? (goal ? "#2ec4b6" : baseCategory.color) : baseCategory.color,
+      icon: item.type === "saving" ? "A" : baseCategory.icon,
+      amount: 0,
+    };
+    existing.amount += Number(item.amount || 0);
+    map.set(key, existing);
+  }
+  for (const row of map.values()) {
+    rows.push({ ...row, pct: total ? Math.round((row.amount / total) * 100) : 0 });
   }
   return rows.sort((a, b) => b.amount - a.amount);
 }
@@ -1823,7 +1836,9 @@ async function addGoalContribution(id) {
     const amount = Number(data.amount || 0);
     if (!amount) return;
     goal.currentAmount = Number(goal.currentAmount || 0) + amount;
-    state.transactions.push(tx(`Ahorro: ${goal.name}`, amount, "expense", defaultMovementDate(), "ahorro", "month", "paid", "saving"));
+    const movement = tx(`Ahorro: ${goal.name}`, amount, "expense", defaultMovementDate(), "ahorro", "month", "paid", "saving");
+    movement.goalId = goal.id;
+    state.transactions.push(movement);
   }, "Aportar");
 }
 

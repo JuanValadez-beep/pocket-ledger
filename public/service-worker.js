@@ -1,4 +1,4 @@
-const CACHE_VERSION = "2026-06-16.19";
+const CACHE_VERSION = "2026-06-16.20";
 const CACHE_PREFIX = "pocket-ledger";
 const RUNTIME_CACHE = `${CACHE_PREFIX}-runtime-${CACHE_VERSION}`;
 const STATIC_CACHE = `${CACHE_PREFIX}-static-${CACHE_VERSION}`;
