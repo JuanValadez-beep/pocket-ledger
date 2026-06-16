@@ -516,6 +516,17 @@ button {
   border-bottom: 1px solid var(--line);
 }
 
+.payment-button {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: inherit;
+}
+
+.payment-button:hover {
+  background: color-mix(in srgb, var(--green-2) 52%, transparent);
+}
+
 .payment-row:last-child,
 .movement-row:last-child {
   border-bottom: 0;
@@ -850,6 +861,11 @@ button {
 
 .income-choice span {
   background: var(--green);
+}
+
+.saving-choice span {
+  background: #2ec4b6;
+  font-size: 22px;
 }
 
 .expense-choice span {

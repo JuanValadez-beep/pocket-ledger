@@ -66,6 +66,7 @@ const demoState = {
     { id: "fx-luz", name: "Luz", amount: 320, day: 6, categoryId: "otros", active: true, paid: false },
     { id: "fx-chat", name: "Chat", amount: 400, day: 15, categoryId: "chat", active: true, paid: true },
   ],
+  fixedPayments: [],
   budgets: [
     { id: "b-casa", year: 2025, month: 4, categoryId: "casa", amount: 2200 },
     { id: "b-gasolina", year: 2025, month: 4, categoryId: "gasolina", amount: 1800 },
@@ -76,8 +77,8 @@ const demoState = {
     { id: "goal-trip", name: "Viaje", targetAmount: 12000, currentAmount: 2000, targetDate: "2025-10-15", categoryId: "ahorro", status: "active", notes: "" },
   ],
   debts: [
-    { id: "debt-laptop", name: "Laptop", totalAmount: 19980, paidAmount: 7770, startDate: "2025-01-01", dueDate: "2026-06-30", minimumPayment: 1110, frequency: "monthly", status: "active", notes: "18 pagos" },
-    { id: "debt-carro", name: "Carro", totalAmount: 7260, paidAmount: 2420, startDate: "2025-06-01", dueDate: "2025-11-30", minimumPayment: 1210, frequency: "monthly", status: "active", notes: "6 pagos" },
+    { id: "debt-laptop", name: "Laptop", totalAmount: 19980, paidAmount: 7770, startDate: "2025-01-01", dueDate: "2026-06-30", minimumPayment: 1110, paymentDay: 30, installments: 18, categoryId: "laptop", frequency: "monthly", status: "active", notes: "18 pagos" },
+    { id: "debt-carro", name: "Carro", totalAmount: 7260, paidAmount: 2420, startDate: "2025-06-01", dueDate: "2025-11-30", minimumPayment: 1210, paymentDay: 30, installments: 6, categoryId: "carro", frequency: "monthly", status: "active", notes: "6 pagos" },
   ],
   debtPayments: [
     { id: "dp-laptop-1", debtId: "debt-laptop", date: "2025-05-23", amount: 1110, notes: "Pago mensual" },
@@ -96,6 +97,7 @@ const demoState = {
 let state = structuredClone(demoState);
 let isUnlocked = false;
 let movementDirection = "expense";
+let movementKind = "expense";
 let editorState = null;
 let unlockError = "";
 
@@ -130,9 +132,15 @@ function ensureStateDefaults() {
     if (!state.categories.some((item) => item.id === category.id)) state.categories.unshift(structuredClone(category));
   }
   state.fixedExpenses = state.fixedExpenses || [];
+  state.fixedPayments = state.fixedPayments || [];
   state.budgets = state.budgets || structuredClone(demoState.budgets);
   state.savingGoals = state.savingGoals || structuredClone(demoState.savingGoals);
   state.debts = state.debts || structuredClone(demoState.debts);
+  for (const debt of state.debts) {
+    debt.categoryId = debt.categoryId || debtCategoryId(debt);
+    debt.paymentDay = Number(debt.paymentDay || (debt.dueDate ? Number(String(debt.dueDate).slice(8, 10)) : 28));
+    debt.installments = Number(debt.installments || 0);
+  }
   state.debtPayments = state.debtPayments || structuredClone(demoState.debtPayments);
   state.transactions = state.transactions || [];
   syncCurrentPayProfile();
@@ -143,6 +151,18 @@ function ensureStateDefaults() {
 
 function selectedMonthDate(day = 1) {
   return `${state.selected.year}-${String(Number(state.selected.month) + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function isoDateFromParts(year, month, day) {
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  return `${year}-${String(month + 1).padStart(2, "0")}-${String(Math.min(day, lastDay)).padStart(2, "0")}`;
+}
+
+function addMonthsDate(dateText, monthsToAdd, preferredDay = 28) {
+  const date = new Date(`${dateText}T12:00:00`);
+  const year = date.getFullYear();
+  const month = date.getMonth() + Number(monthsToAdd || 0);
+  return isoDateFromParts(year + Math.floor(month / 12), ((month % 12) + 12) % 12, Number(preferredDay || date.getDate()));
 }
 
 function getEffectivePayProfile(dateText = defaultMovementDate()) {
@@ -232,6 +252,17 @@ function defaultMovementDate() {
   return `${state.selected.year}-${String(Number(state.selected.month) + 1).padStart(2, "0")}-${day}`;
 }
 
+function periodFromDate(dateText) {
+  const day = Number(String(dateText).slice(8, 10));
+  const periods = getPeriods(dateText);
+  if (periods.some((period) => period.id === "month")) return "month";
+  if (day <= 7 && periods.some((period) => period.id === "week1")) return "week1";
+  if (day <= 14 && periods.some((period) => period.id === "week2")) return "week2";
+  if (day <= 21 && periods.some((period) => period.id === "week3")) return "week3";
+  if (periods.some((period) => period.id === "week4")) return "week4";
+  return day <= 15 ? "first" : "second";
+}
+
 function openDb() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -310,9 +341,9 @@ function totals() {
 
 function groupedCategories() {
   const rows = [];
-  const total = totals().expenses;
+  const total = totals().monthExpense;
   for (const category of state.categories) {
-    const amount = periodTransactions()
+    const amount = currentTransactions()
       .filter((t) => t.direction === "expense" && t.categoryId === category.id && t.status !== "cancelled")
       .reduce((sum, t) => sum + Number(t.amount), 0);
     if (amount > 0) rows.push({ ...category, amount, pct: total ? Math.round((amount / total) * 100) : 0 });
@@ -373,6 +404,51 @@ function fixedDueDate(fx) {
   return selectedMonthDate(day);
 }
 
+function fixedPaymentForMonth(fx) {
+  return state.fixedPayments.find((payment) => payment.fixedExpenseId === fx.id && payment.monthKey === monthKey());
+}
+
+function isFixedPaidThisMonth(fx) {
+  return Boolean(fixedPaymentForMonth(fx));
+}
+
+function fixedPaymentsThisMonth() {
+  return state.fixedExpenses
+    .filter((fx) => fx.active)
+    .map((fx) => ({ ...fx, dueDate: fixedDueDate(fx), paid: isFixedPaidThisMonth(fx) }))
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+}
+
+function debtCategoryId(debt) {
+  const byId = debt.categoryId && state.categories.some((category) => category.id === debt.categoryId) ? debt.categoryId : "";
+  if (byId) return byId;
+  const byName = state.categories.find((category) => category.name.toLowerCase() === String(debt.name || "").toLowerCase());
+  return byName?.id || state.categories.find((category) => category.type === "debt")?.id || "carro";
+}
+
+function debtDueDateForMonth(debt) {
+  const day = Math.min(Number(debt.paymentDay || 28), new Date(Number(state.selected.year), Number(state.selected.month) + 1, 0).getDate());
+  return selectedMonthDate(day);
+}
+
+function debtPaidThisMonth(debt) {
+  return state.debtPayments.some((payment) => payment.debtId === debt.id && monthKey(new Date(`${payment.date}T12:00:00`).getFullYear(), new Date(`${payment.date}T12:00:00`).getMonth()) === monthKey());
+}
+
+function upcomingDebtsForSelectedPeriod() {
+  const bounds = selectedPeriodBounds();
+  return state.debts
+    .filter((debt) => debt.status !== "paid")
+    .map((debt) => ({ ...debt, dueDateForMonth: debtDueDateForMonth(debt), paidThisMonth: debtPaidThisMonth(debt) }))
+    .filter((debt) => {
+      const due = new Date(`${debt.dueDateForMonth}T12:00:00`);
+      const start = new Date(`${debt.startDate || selectedMonthDate()}T12:00:00`);
+      const end = debt.dueDate ? new Date(`${debt.dueDate}T12:00:00`) : null;
+      return due >= bounds.start && due <= bounds.end && due >= start && (!end || due <= end) && !debt.paidThisMonth;
+    })
+    .sort((a, b) => a.dueDateForMonth.localeCompare(b.dueDateForMonth));
+}
+
 function monthlyCategorySpend(categoryId) {
   return currentTransactions()
     .filter((t) => t.direction === "expense" && t.status !== "cancelled" && t.categoryId === categoryId)
@@ -404,7 +480,7 @@ function calendarItems() {
     items.push({ date: txItem.date, label: txItem.concept, amount: txItem.amount, type: txItem.direction === "income" ? "Ingreso" : "Movimiento", status: txItem.status });
   }
   for (const fx of state.fixedExpenses.filter((item) => item.active)) {
-    items.push({ date: `${year}-${String(month + 1).padStart(2, "0")}-${String(fx.day).padStart(2, "0")}`, label: fx.name, amount: fx.amount, type: "Pago fijo", status: fx.paid ? "Pagado" : "Pendiente" });
+    items.push({ date: fixedDueDate(fx), label: fx.name, amount: fx.amount, type: "Pago fijo", status: isFixedPaidThisMonth(fx) ? "Pagado" : "Pendiente" });
   }
   for (const debt of state.debts.filter((item) => item.status !== "paid")) {
     const due = debt.dueDate || `${year}-${String(month + 1).padStart(2, "0")}-28`;
@@ -574,6 +650,9 @@ function renderHome() {
   const rows = groupedCategories();
   const health = healthState();
   const daysLeft = daysLeftInSelectedPeriod();
+  const fixedRows = fixedPaymentsThisMonth();
+  const pendingFixedRows = fixedRows.filter((fx) => !fx.paid);
+  const debtRows = upcomingDebtsForSelectedPeriod();
   return `
     <div class="view ${state.selected.view === "home" ? "active" : ""}" data-view="home">
       ${renderControls()}
@@ -591,9 +670,9 @@ function renderHome() {
         </div>
       </section>
       <section class="card">
-        <h2 class="section-title">En que se va mi sueldo</h2>
+        <h2 class="section-title">En que se va mi sueldo este mes</h2>
         <div class="donut-row">
-          <div class="donut" style="background:${donutGradient(rows)}"><div class="donut-center"><strong>${shortMoney(t.expenses)}</strong><span>Total</span></div></div>
+          <div class="donut" style="background:${donutGradient(rows)}"><div class="donut-center"><strong>${shortMoney(t.monthExpense)}</strong><span>Mes</span></div></div>
           <div class="category-list">
             ${rows.map((row) => `
               <div class="category-row">
@@ -602,7 +681,7 @@ function renderHome() {
                 <strong>${shortMoney(row.amount)}</strong>
                 <span class="subtle">${row.pct}%</span>
               </div>
-            `).join("") || `<p class="empty">Aun no hay gastos en esta quincena.</p>`}
+            `).join("") || `<p class="empty">Aun no hay gastos este mes.</p>`}
           </div>
         </div>
       </section>
@@ -623,19 +702,35 @@ function renderHome() {
         </div>
       </section>
       <section class="card">
-        <h2 class="section-title">Proximos pagos fijos</h2>
+        <div class="card-title"><h2>Pagos fijos del mes</h2><button class="info-dot" data-info="fixed" aria-label="Ver informacion">i</button></div>
         <div class="payment-list">
-          ${state.fixedExpenses.filter((fx) => fx.active && !fx.paid).slice(0, 3).map((fx) => {
+          ${pendingFixedRows.map((fx) => {
             const category = categoryById(fx.categoryId);
-            const due = fixedDueDate(fx);
+            const due = fx.dueDate;
             return `
-              <div class="payment-row">
+              <button class="payment-row payment-button" data-pay-fixed="${fx.id}" type="button">
                 <span class="tile" style="background:${category.color}22;color:${category.color}">${category.icon}</span>
                 <div><strong>${fx.name}</strong><br><span class="subtle">${due}</span></div>
                 <div><strong>${money(fx.amount)}</strong><br><span class="${daysUntil(due) <= 3 ? "danger" : "subtle"}">${dueText(due)}</span></div>
-              </div>
+              </button>
             `;
-          }).join("")}
+          }).join("") || `<p class="empty">Sin pagos fijos pendientes este mes.</p>`}
+        </div>
+        ${fixedRows.some((fx) => fx.paid) ? `<p class="subtle paid-note">${fixedRows.filter((fx) => fx.paid).length} pago${fixedRows.filter((fx) => fx.paid).length === 1 ? "" : "s"} fijo${fixedRows.filter((fx) => fx.paid).length === 1 ? "" : "s"} pagado${fixedRows.filter((fx) => fx.paid).length === 1 ? "" : "s"} este mes.</p>` : ""}
+      </section>
+      <section class="card">
+        <div class="card-title"><h2>Deudas del periodo</h2><button class="info-dot" data-info="debts" aria-label="Ver informacion">i</button></div>
+        <div class="payment-list">
+          ${debtRows.map((debt) => {
+            const category = categoryById(debtCategoryId(debt));
+            return `
+              <button class="payment-row payment-button" data-pay-debt="${debt.id}" type="button">
+                <span class="tile" style="background:${category.color}22;color:${category.color}">${category.icon}</span>
+                <div><strong>${debt.name}</strong><br><span class="subtle">${debt.dueDateForMonth} · ${debt.installments ? `${debt.installments} meses` : "plan abierto"}</span></div>
+                <div><strong>${money(debt.minimumPayment)}</strong><br><span class="${daysUntil(debt.dueDateForMonth) <= 3 ? "danger" : "subtle"}">${dueText(debt.dueDateForMonth)}</span></div>
+              </button>
+            `;
+          }).join("") || `<p class="empty">Sin deudas pendientes en este periodo.</p>`}
         </div>
       </section>
     </div>
@@ -770,7 +865,10 @@ function renderSavings() {
           <label class="field"><span>Nombre</span><input name="name" required placeholder="Tarjeta"></label>
           <label class="field"><span>Monto total</span><input name="totalAmount" required type="number" min="1" step="0.01"></label>
           <label class="field"><span>Pagado inicial</span><input name="paidAmount" type="number" min="0" step="0.01" value="0"></label>
-          <label class="field"><span>Pago minimo</span><input name="minimumPayment" type="number" min="0" step="0.01"></label>
+          <label class="field"><span>Meses</span><input name="installments" type="number" min="1" step="1" placeholder="12"></label>
+          <label class="field"><span>Dia de pago</span><input name="paymentDay" type="number" min="1" max="31" value="28"></label>
+          <label class="field"><span>Pago por periodo</span><input name="minimumPayment" type="number" min="0" step="0.01"></label>
+          <label class="field"><span>Categoria</span><select name="categoryId">${movementCategories("expense").filter((category) => category.type === "debt").map((category) => `<option value="${category.id}">${category.name}</option>`).join("")}</select></label>
           <label class="field"><span>Fecha limite</span><input name="dueDate" type="date"></label>
           <button class="secondary-btn">Agregar deuda</button>
         </form>
@@ -950,7 +1048,7 @@ function renderSettings() {
                 <span class="tile" style="background:${category.color}22;color:${category.color}">${category.icon}</span>
                 <div><strong>${fx.name}</strong><br><span class="subtle">Dia ${fx.day} · ${money(fx.amount)} · ${fx.active === false ? "inactivo" : "activo"}</span></div>
                 <div class="row-actions">
-                  <button class="secondary-btn small-btn" data-toggle-fixed="${fx.id}">${fx.paid ? "Pendiente" : "Pagado"}</button>
+                  <button class="secondary-btn small-btn" data-toggle-fixed="${fx.id}">${isFixedPaidThisMonth(fx) ? "Pendiente" : "Pagar"}</button>
                   <button class="secondary-btn small-btn" data-edit-fixed="${fx.id}">Editar</button>
                   <button class="danger-btn small-btn" data-delete-fixed="${fx.id}">Eliminar</button>
                 </div>
@@ -988,17 +1086,23 @@ function renderModal() {
             <strong>Ingreso</strong>
             <small>Sueldo, bono, reembolso o dinero extra</small>
           </button>
+          <button class="choice-card saving-choice" data-start-movement="saving" type="button">
+            <span>A</span>
+            <strong>Ahorro</strong>
+            <small>Aportacion a meta o ahorro general</small>
+          </button>
           <button class="choice-card expense-choice" data-start-movement="expense" type="button">
             <span>-</span>
             <strong>Gasto</strong>
-            <small>Pago fijo, compra, deuda o gasto variable</small>
+            <small>Compra, categoria de gasto o pago de deuda</small>
           </button>
         </div>
         <form class="form-grid" id="expenseForm">
           <input type="hidden" name="direction" value="${movementDirection}">
+          <input type="hidden" name="kind" value="${movementKind}">
           <label class="field"><span>Concepto</span><input name="concept" required placeholder="Sueldo, gasolina, bono"></label>
           <label class="field"><span>Monto</span><input name="amount" required type="number" min="1" step="0.01" placeholder="850"></label>
-          <label class="field"><span>Categoria</span><select name="categoryId">${movementCategories(movementDirection).map((c) => `<option value="${c.id}">${c.name}</option>`).join("")}</select></label>
+          <label class="field"><span id="targetLabel">Categoria</span><select name="targetId">${movementTargetOptions(movementKind)}</select></label>
           <label class="field"><span>Fecha</span><input name="date" type="date" value="${defaultMovementDate()}"></label>
           <label class="field"><span>Periodo</span><select name="period">${getPeriods().map((period) => `<option value="${period.id}" ${period.id === state.selected.period ? "selected" : ""}>${period.label}</option>`).join("")}</select></label>
           <label class="field"><span>Notas</span><textarea name="notes" rows="2"></textarea></label>
@@ -1080,6 +1184,20 @@ function renderEditorField(field) {
   return `<label class="field"><span>${field.label}</span><input name="${field.name}" type="${field.type || "text"}" value="${field.value ?? ""}" ${field.min !== undefined ? `min="${field.min}"` : ""} ${field.max !== undefined ? `max="${field.max}"` : ""} ${field.step !== undefined ? `step="${field.step}"` : ""} ${field.required ? "required" : ""}></label>`;
 }
 
+function movementTargetOptions(kind = movementKind) {
+  if (kind === "income") {
+    return movementCategories("income").map((category) => `<option value="cat:${category.id}">${category.name}</option>`).join("");
+  }
+  if (kind === "saving") {
+    const goals = state.savingGoals.filter((goal) => goal.status !== "done").map((goal) => `<option value="goal:${goal.id}">Meta: ${goal.name}</option>`).join("");
+    const categories = movementCategories("expense").filter((category) => category.type === "saving" || category.id === "ahorro").map((category) => `<option value="cat:${category.id}">${category.name}</option>`).join("");
+    return `${goals}${categories || `<option value="cat:ahorro">Ahorro general</option>`}`;
+  }
+  const categories = movementCategories("expense").filter((category) => category.type !== "debt").map((category) => `<option value="cat:${category.id}">${category.name}</option>`).join("");
+  const debts = state.debts.filter((debt) => debt.status !== "paid").map((debt) => `<option value="debt:${debt.id}">Deuda: ${debt.name}</option>`).join("");
+  return `${categories}${debts}`;
+}
+
 function bindEvents() {
   document.querySelectorAll("[data-calendar-control='month']").forEach((select) => {
     select.addEventListener("change", (e) => updateSelected("month", Number(e.target.value)));
@@ -1124,6 +1242,7 @@ function bindEvents() {
   document.querySelectorAll("[data-delete-transaction]").forEach((btn) => btn.addEventListener("click", () => deleteTransaction(btn.dataset.deleteTransaction)));
   document.querySelectorAll("[data-edit-budget]").forEach((btn) => btn.addEventListener("click", () => editBudget(btn.dataset.editBudget)));
   document.querySelectorAll("[data-delete-budget]").forEach((btn) => btn.addEventListener("click", () => deleteBudget(btn.dataset.deleteBudget)));
+  document.querySelectorAll("[data-pay-fixed]").forEach((btn) => btn.addEventListener("click", () => payFixed(btn.dataset.payFixed)));
   document.querySelectorAll("[data-toggle-fixed]").forEach((btn) => btn.addEventListener("click", () => toggleFixed(btn.dataset.toggleFixed)));
   document.querySelectorAll("[data-edit-fixed]").forEach((btn) => btn.addEventListener("click", () => editFixed(btn.dataset.editFixed)));
   document.querySelectorAll("[data-delete-fixed]").forEach((btn) => btn.addEventListener("click", () => deleteFixed(btn.dataset.deleteFixed)));
@@ -1259,18 +1378,21 @@ function closeMovementModal() {
   modal?.classList.remove("open", "choosing");
 }
 
-function startMovement(direction) {
-  movementDirection = direction === "income" ? "income" : "expense";
-  const isIncome = movementDirection === "income";
+function startMovement(kind) {
+  movementKind = ["income", "saving", "expense"].includes(kind) ? kind : "expense";
+  movementDirection = movementKind === "income" ? "income" : "expense";
+  const isIncome = movementKind === "income";
+  const isSaving = movementKind === "saving";
   $("#expenseModal")?.classList.remove("choosing");
-  $("#modalTitle").textContent = isIncome ? "Agregar ingreso" : "Agregar gasto";
+  $("#modalTitle").textContent = isIncome ? "Agregar ingreso" : isSaving ? "Agregar ahorro" : "Agregar gasto";
   const form = $("#expenseForm");
   form.elements.direction.value = movementDirection;
-  form.elements.concept.placeholder = isIncome ? "Sueldo, bono, reembolso" : "Gasolina, casa, comida";
-  form.elements.amount.placeholder = isIncome ? String(state.settings.baseSalary || 6000) : "850";
-  form.elements.categoryId.innerHTML = movementCategories(movementDirection).map((c) => `<option value="${c.id}">${c.name}</option>`).join("");
-  form.elements.categoryId.value = isIncome ? "ingresos" : movementCategories("expense")[0]?.id || "otros";
-  $("#movementSubmitBtn").textContent = isIncome ? "Guardar ingreso" : "Guardar gasto";
+  form.elements.kind.value = movementKind;
+  form.elements.concept.placeholder = isIncome ? "Sueldo, bono, reembolso" : isSaving ? "Ahorro, fondo, viaje" : "Gasolina, casa, comida";
+  form.elements.amount.placeholder = isIncome ? String(state.settings.baseSalary || 6000) : isSaving ? "500" : "850";
+  form.elements.targetId.innerHTML = movementTargetOptions(movementKind);
+  $("#targetLabel").textContent = isIncome ? "Categoria de ingreso" : isSaving ? "Meta o ahorro" : "Categoria o deuda";
+  $("#movementSubmitBtn").textContent = isIncome ? "Guardar ingreso" : isSaving ? "Guardar ahorro" : "Guardar gasto";
   form.elements.concept.focus();
 }
 
@@ -1372,8 +1494,27 @@ async function onFixedSubmit(event) {
 async function toggleFixed(id) {
   const item = state.fixedExpenses.find((fixed) => fixed.id === id);
   if (!item) return;
-  item.paid = !item.paid;
-  await saveAndRender();
+  const payment = fixedPaymentForMonth(item);
+  if (payment) {
+    openConfirm("Marcar pendiente", `Quitar el pago de ${item.name} de ${months[state.selected.month]}?`, () => {
+      state.transactions = state.transactions.filter((transaction) => transaction.id !== payment.transactionId);
+      state.fixedPayments = state.fixedPayments.filter((entry) => entry.id !== payment.id);
+    }, "Marcar pendiente");
+    return;
+  }
+  payFixed(id);
+}
+
+async function payFixed(id) {
+  const item = state.fixedExpenses.find((fixed) => fixed.id === id);
+  if (!item) return;
+  if (isFixedPaidThisMonth(item)) {
+    openNotice("Pago fijo pagado", `${item.name} ya esta pagado en ${months[state.selected.month]}.`);
+    return;
+  }
+  openConfirm("Pagar pago fijo", `Registrar ${item.name} por ${money(item.amount)} con fecha ${fixedDueDate(item)}?`, () => {
+    registerFixedPayment(item);
+  }, "Pagar");
 }
 
 async function editFixed(id) {
@@ -1386,23 +1527,32 @@ async function editFixed(id) {
     { name: "categoryId", label: "Categoria", type: "select", value: item.categoryId, options: movementCategories("expense").map((category) => [category.id, category.name]) },
     { name: "frequency", label: "Frecuencia", type: "select", value: item.frequency || "monthly", options: [["monthly", "Mensual"], ["biweekly", "Quincenal"], ["weekly", "Semanal"]] },
     { name: "active", label: "Pago activo", type: "checkbox", value: item.active !== false },
-    { name: "paid", label: "Pagado en el periodo", type: "checkbox", value: item.paid === true },
+    { name: "paid", label: "Pagado este mes", type: "checkbox", value: isFixedPaidThisMonth(item) },
     { name: "notes", label: "Notas", type: "textarea", value: item.notes || "" },
   ], (data) => {
+    const previousPayment = fixedPaymentForMonth(item);
     item.name = String(data.name || item.name).trim();
     item.amount = Number(data.amount || 0);
     item.day = Math.max(1, Math.min(31, Number(data.day || 1)));
     item.categoryId = data.categoryId || item.categoryId;
     item.frequency = data.frequency || "monthly";
     item.active = Boolean(data.active);
-    item.paid = Boolean(data.paid);
+    item.paid = false;
     item.notes = data.notes || "";
+    if (data.paid && !previousPayment) registerFixedPayment(item);
+    if (!data.paid && previousPayment) {
+      state.transactions = state.transactions.filter((transaction) => transaction.id !== previousPayment.transactionId);
+      state.fixedPayments = state.fixedPayments.filter((entry) => entry.id !== previousPayment.id);
+    }
   });
 }
 
 async function deleteFixed(id) {
   openConfirm("Eliminar pago fijo", "Eliminar este pago fijo?", () => {
+    const paymentTransactionIds = state.fixedPayments.filter((payment) => payment.fixedExpenseId === id).map((payment) => payment.transactionId);
     state.fixedExpenses = state.fixedExpenses.filter((item) => item.id !== id);
+    state.fixedPayments = state.fixedPayments.filter((payment) => payment.fixedExpenseId !== id);
+    state.transactions = state.transactions.filter((transaction) => !paymentTransactionIds.includes(transaction.id));
   }, "Eliminar");
 }
 
@@ -1523,14 +1673,21 @@ async function deleteGoal(id) {
 async function onDebtSubmit(event) {
   event.preventDefault();
   const data = Object.fromEntries(new FormData(event.currentTarget));
+  const installments = Number(data.installments || 0);
+  const startDate = defaultMovementDate();
+  const estimatedPayment = installments ? Math.max(0, (Number(data.totalAmount || 0) - Number(data.paidAmount || 0)) / installments) : 0;
+  const dueDate = data.dueDate || (installments ? addMonthsDate(startDate, installments - 1, Number(data.paymentDay || 28)) : "");
   state.debts.push({
     id: `debt-${crypto.randomUUID()}`,
     name: String(data.name || "").trim(),
     totalAmount: Number(data.totalAmount || 0),
     paidAmount: Number(data.paidAmount || 0),
-    startDate: defaultMovementDate(),
-    dueDate: data.dueDate || "",
-    minimumPayment: Number(data.minimumPayment || 0),
+    startDate,
+    dueDate,
+    minimumPayment: Number(data.minimumPayment || estimatedPayment || 0),
+    paymentDay: Number(data.paymentDay || 28),
+    installments,
+    categoryId: data.categoryId || "carro",
     frequency: "monthly",
     status: "active",
     notes: "",
@@ -1548,10 +1705,7 @@ async function payDebt(id) {
   ], (data) => {
     const amount = Number(data.amount || 0);
     if (!amount) return;
-    state.debtPayments.push({ id: `dp-${crypto.randomUUID()}`, debtId: id, date: data.date || defaultMovementDate(), amount, notes: data.notes || "" });
-    state.transactions.push(tx(`Pago deuda: ${debt.name}`, amount, "expense", data.date || defaultMovementDate(), "carro", state.selected.period, "paid", "debt"));
-    debt.paidAmount = Number(debt.paidAmount || 0) + amount;
-    if (debtBalance(debt).pending <= 0) debt.status = "paid";
+    registerDebtPayment(debt, amount, data.date || defaultMovementDate(), data.notes || "");
   }, "Registrar pago");
 }
 
@@ -1565,6 +1719,9 @@ async function editDebt(id) {
     { name: "startDate", label: "Fecha inicio", type: "date", value: debt.startDate || defaultMovementDate() },
     { name: "dueDate", label: "Fecha limite", type: "date", value: debt.dueDate || "" },
     { name: "minimumPayment", label: "Pago minimo", type: "number", min: 0, step: "0.01", value: debt.minimumPayment || 0 },
+    { name: "paymentDay", label: "Dia de pago", type: "number", min: 1, max: 31, value: debt.paymentDay || 28 },
+    { name: "installments", label: "Meses / pagos", type: "number", min: 0, step: 1, value: debt.installments || 0 },
+    { name: "categoryId", label: "Categoria", type: "select", value: debtCategoryId(debt), options: movementCategories("expense").filter((category) => category.type === "debt").map((category) => [category.id, category.name]) },
     { name: "frequency", label: "Frecuencia", type: "select", value: debt.frequency || "monthly", options: [["weekly", "Semanal"], ["biweekly", "Quincenal"], ["monthly", "Mensual"], ["single", "Unico"]] },
     { name: "status", label: "Estado", type: "select", value: debt.status || "active", options: [["active", "Activa"], ["paused", "Pausada"], ["paid", "Liquidada"]] },
     { name: "notes", label: "Notas", type: "textarea", value: debt.notes || "" },
@@ -1575,6 +1732,9 @@ async function editDebt(id) {
     debt.startDate = data.startDate || debt.startDate || defaultMovementDate();
     debt.dueDate = data.dueDate || "";
     debt.minimumPayment = Number(data.minimumPayment || 0);
+    debt.paymentDay = Math.max(1, Math.min(31, Number(data.paymentDay || 28)));
+    debt.installments = Number(data.installments || 0);
+    debt.categoryId = data.categoryId || debtCategoryId(debt);
     debt.frequency = data.frequency || "monthly";
     debt.status = data.status || "active";
     debt.notes = data.notes || "";
@@ -1585,6 +1745,7 @@ async function deleteDebt(id) {
   openConfirm("Eliminar deuda", "Eliminar esta deuda y sus pagos?", () => {
     state.debts = state.debts.filter((item) => item.id !== id);
     state.debtPayments = state.debtPayments.filter((item) => item.debtId !== id);
+    state.transactions = state.transactions.filter((item) => item.debtId !== id);
   }, "Eliminar");
 }
 
@@ -1624,7 +1785,7 @@ function onCanBuySubmit(event) {
   const t = totals();
   const row = budgetRows().find((budget) => budget.id === data.categoryId);
   const after = t.available - amount;
-  const fixedPending = state.fixedExpenses.filter((item) => item.active && !item.paid).reduce((sum, item) => sum + Number(item.amount), 0);
+  const fixedPending = fixedPaymentsThisMonth().filter((item) => !item.paid).reduce((sum, item) => sum + Number(item.amount), 0);
   const exceedsBudget = row?.assigned ? row.spent + amount > row.assigned : false;
   const status = after < fixedPending || exceedsBudget ? "No recomendable" : after < fixedPending + 500 ? "Compra con cuidado" : "Compra segura";
   $("#canBuyResult").innerHTML = `<strong>${status}</strong><br><span class="subtle">Disponible despues: ${money(after)}. Pagos fijos pendientes: ${money(fixedPending)}. ${exceedsBudget ? "Excede presupuesto de categoria." : "No excede presupuesto registrado."}</span>`;
@@ -1662,15 +1823,64 @@ async function saveAndRender() {
   render();
 }
 
+function splitTargetId(targetId = "") {
+  const [type, id] = String(targetId).split(":");
+  return { type, id };
+}
+
+function registerDebtPayment(debt, amount, date, notes = "") {
+  const paymentDate = date || defaultMovementDate();
+  const categoryId = debtCategoryId(debt);
+  const payment = { id: `dp-${crypto.randomUUID()}`, debtId: debt.id, date: paymentDate, amount, notes };
+  const movement = tx(`Pago deuda: ${debt.name}`, amount, "expense", paymentDate, categoryId, periodFromDate(paymentDate), "paid", "debt");
+  movement.debtId = debt.id;
+  state.debtPayments.push(payment);
+  state.transactions.push(movement);
+  debt.paidAmount = Number(debt.paidAmount || 0) + amount;
+  if (debtBalance(debt).pending <= 0) debt.status = "paid";
+}
+
+function registerFixedPayment(fx) {
+  const date = fixedDueDate(fx);
+  const movement = tx(fx.name, Number(fx.amount || 0), "expense", date, fx.categoryId, periodFromDate(date), "paid", "fixed");
+  movement.fixedExpenseId = fx.id;
+  state.transactions.push(movement);
+  state.fixedPayments.push({
+    id: `fp-${crypto.randomUUID()}`,
+    fixedExpenseId: fx.id,
+    transactionId: movement.id,
+    monthKey: monthKey(),
+    date,
+    amount: Number(fx.amount || 0),
+  });
+}
+
 async function onExpenseSubmit(event) {
   event.preventDefault();
   const data = Object.fromEntries(new FormData(event.currentTarget));
   const direction = data.direction === "income" ? "income" : "expense";
-  const categoryId = data.categoryId || (direction === "income" ? "ingresos" : "otros");
-  state.transactions.push({
-    ...tx(data.concept, Number(data.amount), direction, data.date || defaultMovementDate(), categoryId, data.period || state.selected.period, "paid", direction === "income" ? "income" : "variable"),
-    notes: data.notes,
-  });
+  const kind = data.kind || (direction === "income" ? "income" : "expense");
+  const amount = Number(data.amount || 0);
+  const date = data.date || defaultMovementDate();
+  const { type, id } = splitTargetId(data.targetId);
+  if (kind === "saving") {
+    const goal = type === "goal" ? state.savingGoals.find((item) => item.id === id) : null;
+    if (goal) goal.currentAmount = Number(goal.currentAmount || 0) + amount;
+    state.transactions.push({
+      ...tx(data.concept || (goal ? `Ahorro: ${goal.name}` : "Ahorro"), amount, "expense", date, "ahorro", periodFromDate(date), "paid", "saving"),
+      goalId: goal?.id,
+      notes: data.notes,
+    });
+  } else if (kind === "expense" && type === "debt") {
+    const debt = state.debts.find((item) => item.id === id);
+    if (debt) registerDebtPayment(debt, amount, date, data.notes || "");
+  } else {
+    const categoryId = type === "cat" ? id : direction === "income" ? "ingresos" : "otros";
+    state.transactions.push({
+      ...tx(data.concept, amount, direction, date, categoryId, data.period || periodFromDate(date), "paid", direction === "income" ? "income" : "variable"),
+      notes: data.notes,
+    });
+  }
   closeMovementModal();
   await saveAndRender();
 }
@@ -1690,8 +1900,8 @@ function exportExcel() {
   saveState();
   const sheets = {
     Movimientos: [
-      ["id", "date", "concept", "amount", "direction", "categoryId", "category", "period", "status", "type", "paymentMethod", "notes"],
-      ...state.transactions.map((t) => [t.id, t.date, t.concept, t.amount, t.direction, t.categoryId, categoryById(t.categoryId).name, t.period, t.status, t.type, t.paymentMethod, t.notes]),
+      ["id", "date", "concept", "amount", "direction", "categoryId", "category", "period", "status", "type", "paymentMethod", "notes", "fixedExpenseId", "debtId", "goalId"],
+      ...state.transactions.map((t) => [t.id, t.date, t.concept, t.amount, t.direction, t.categoryId, categoryById(t.categoryId).name, t.period, t.status, t.type, t.paymentMethod, t.notes, t.fixedExpenseId || "", t.debtId || "", t.goalId || ""]),
     ],
     Categorias: [
       ["id", "name", "type", "color", "icon", "active"],
@@ -1700,6 +1910,10 @@ function exportExcel() {
     PagosFijos: [
       ["id", "name", "amount", "day", "categoryId", "active", "paid"],
       ...state.fixedExpenses.map((fx) => [fx.id, fx.name, fx.amount, fx.day, fx.categoryId, fx.active, fx.paid]),
+    ],
+    PagosFijosRealizados: [
+      ["id", "fixedExpenseId", "transactionId", "monthKey", "date", "amount"],
+      ...state.fixedPayments.map((payment) => [payment.id, payment.fixedExpenseId, payment.transactionId, payment.monthKey, payment.date, payment.amount]),
     ],
     Presupuestos: [
       ["id", "year", "month", "categoryId", "amount"],
@@ -1710,8 +1924,8 @@ function exportExcel() {
       ...state.savingGoals.map((g) => [g.id, g.name, g.targetAmount, g.currentAmount, g.targetDate, g.categoryId, g.status, g.notes]),
     ],
     Deudas: [
-      ["id", "name", "totalAmount", "paidAmount", "startDate", "dueDate", "minimumPayment", "frequency", "status", "notes"],
-      ...state.debts.map((d) => [d.id, d.name, d.totalAmount, d.paidAmount, d.startDate, d.dueDate, d.minimumPayment, d.frequency, d.status, d.notes]),
+      ["id", "name", "totalAmount", "paidAmount", "startDate", "dueDate", "minimumPayment", "paymentDay", "installments", "categoryId", "frequency", "status", "notes"],
+      ...state.debts.map((d) => [d.id, d.name, d.totalAmount, d.paidAmount, d.startDate, d.dueDate, d.minimumPayment, d.paymentDay, d.installments, debtCategoryId(d), d.frequency, d.status, d.notes]),
     ],
     PagosDeuda: [
       ["id", "debtId", "date", "amount", "notes"],
@@ -1754,9 +1968,10 @@ async function importExcel(event) {
     state.transactions = rowsToObjects(sheets.Movimientos || []).map((row) => ({ ...row, amount: Number(row.amount || 0) }));
     state.categories = rowsToObjects(sheets.Categorias || []).map((row) => ({ ...row, active: parseBool(row.active) }));
     state.fixedExpenses = rowsToObjects(sheets.PagosFijos || []).map((row) => ({ ...row, amount: Number(row.amount || 0), day: Number(row.day || 1), active: parseBool(row.active), paid: parseBool(row.paid) }));
+    state.fixedPayments = rowsToObjects(sheets.PagosFijosRealizados || []).map((row) => ({ ...row, amount: Number(row.amount || 0) }));
     state.budgets = rowsToObjects(sheets.Presupuestos || []).map((row) => ({ ...row, year: Number(row.year), month: Number(row.month), amount: Number(row.amount || 0) }));
     state.savingGoals = rowsToObjects(sheets.Metas || []).map((row) => ({ ...row, targetAmount: Number(row.targetAmount || 0), currentAmount: Number(row.currentAmount || 0) }));
-    state.debts = rowsToObjects(sheets.Deudas || []).map((row) => ({ ...row, totalAmount: Number(row.totalAmount || 0), paidAmount: Number(row.paidAmount || 0), minimumPayment: Number(row.minimumPayment || 0) }));
+    state.debts = rowsToObjects(sheets.Deudas || []).map((row) => ({ ...row, totalAmount: Number(row.totalAmount || 0), paidAmount: Number(row.paidAmount || 0), minimumPayment: Number(row.minimumPayment || 0), paymentDay: Number(row.paymentDay || 28), installments: Number(row.installments || 0) }));
     state.debtPayments = rowsToObjects(sheets.PagosDeuda || []).map((row) => ({ ...row, amount: Number(row.amount || 0) }));
     state.payProfiles = rowsToObjects(sheets.SueldoHistorico || []).map((row) => ({ ...row, baseSalary: Number(row.baseSalary || 0) }));
     const config = rowsToObjects(sheets.Config || []);
